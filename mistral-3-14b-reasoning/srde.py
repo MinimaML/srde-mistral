@@ -720,11 +720,14 @@ def create_srde_model(
             
             # Create a wrapper class
             class Ministral3ForCausalLM(nn.Module):
-                def __init__(self, lang_model, head):
+                def __init__(self, lang_model, head, model_config):
                     super().__init__()
                     self.model = lang_model
                     self.lm_head = head
-                    self.config = lang_model.config if hasattr(lang_model, 'config') else full_model.config
+                    # Store as model_config, not config (to avoid conflict with SRDEConfig)
+                    self.model_config = model_config
+                    # But also expose as config for compatibility
+                    self.config = model_config
                 
                 def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
                     # Remove cache-related kwargs that cause issues
@@ -767,7 +770,8 @@ def create_srde_model(
                     if hasattr(self.model, 'gradient_checkpointing_enable'):
                         self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs)
             
-            base_model = Ministral3ForCausalLM(language_model, lm_head)
+            model_config = language_model.config if hasattr(language_model, 'config') else full_model.config
+            base_model = Ministral3ForCausalLM(language_model, lm_head, model_config)
             print(f"[SRDE] Created Ministral3ForCausalLM wrapper")
         else:
             raise RuntimeError(f"Failed to load base model '{model_name}': {e}")
