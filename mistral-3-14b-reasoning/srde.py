@@ -702,13 +702,13 @@ def create_srde_model(
             # If still no lm_head, create one from config
             if lm_head is None:
                 print("[SRDE] WARNING: Could not find lm_head, creating from config...")
-                config = full_model.config
-                if hasattr(config, 'text_config'):
-                    hidden_size = config.text_config.hidden_size
-                    vocab_size = config.text_config.vocab_size
+                hf_config = full_model.config  # Use different name to avoid shadowing SRDEConfig
+                if hasattr(hf_config, 'text_config'):
+                    hidden_size = hf_config.text_config.hidden_size
+                    vocab_size = hf_config.text_config.vocab_size
                 else:
-                    hidden_size = config.hidden_size
-                    vocab_size = config.vocab_size
+                    hidden_size = hf_config.hidden_size
+                    vocab_size = hf_config.vocab_size
                 lm_head = nn.Linear(hidden_size, vocab_size, bias=False)
                 # Try to get weights from embed_tokens
                 if hasattr(language_model, 'embed_tokens'):
