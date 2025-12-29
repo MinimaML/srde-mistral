@@ -674,18 +674,63 @@ def create_srde_model(
                 **model_kwargs
             )
             
-            # Create a wrapper class that combines the text model with lm_head
+            # Debug: print model structure
+            print(f"[SRDE] Full model type: {type(full_model).__name__}")
+            print(f"[SRDE] Full model attributes: {[a for a in dir(full_model) if not a.startswith('_')][:20]}")
+            
+            # Find the language model and lm_head
+            language_model = None
+            lm_head = None
+            
+            # Look for language_model
+            if hasattr(full_model, 'language_model'):
+                language_model = full_model.language_model
+                # Check if lm_head is on language_model
+                if hasattr(full_model.language_model, 'lm_head'):
+                    lm_head = full_model.language_model.lm_head
+            
+            # Look for lm_head in various places
+            if lm_head is None:
+                for attr in ['lm_head', 'output', 'head', 'cls']:
+                    if hasattr(full_model, attr):
+                        lm_head = getattr(full_model, attr)
+                        break
+                    if language_model and hasattr(language_model, attr):
+                        lm_head = getattr(language_model, attr)
+                        break
+            
+            # If still no lm_head, create one from config
+            if lm_head is None:
+                print("[SRDE] WARNING: Could not find lm_head, creating from config...")
+                config = full_model.config
+                if hasattr(config, 'text_config'):
+                    hidden_size = config.text_config.hidden_size
+                    vocab_size = config.text_config.vocab_size
+                else:
+                    hidden_size = config.hidden_size
+                    vocab_size = config.vocab_size
+                lm_head = nn.Linear(hidden_size, vocab_size, bias=False)
+                # Try to get weights from embed_tokens
+                if hasattr(language_model, 'embed_tokens'):
+                    lm_head.weight = language_model.embed_tokens.weight
+                    print("[SRDE] Tied lm_head weights to embed_tokens")
+            
+            if language_model is None:
+                raise RuntimeError("Could not find language_model in Mistral3Model")
+            
+            # Create a wrapper class
             class Ministral3ForCausalLM(nn.Module):
-                def __init__(self, full_model):
+                def __init__(self, lang_model, head):
                     super().__init__()
-                    self.model = full_model.language_model
-                    self.lm_head = full_model.lm_head
-                    self.config = full_model.config
-                    # Copy important attributes
-                    if hasattr(full_model, 'generation_config'):
-                        self.generation_config = full_model.generation_config
+                    self.model = lang_model
+                    self.lm_head = head
+                    self.config = lang_model.config if hasattr(lang_model, 'config') else full_model.config
                 
                 def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
+                    # Remove cache-related kwargs that cause issues
+                    kwargs.pop('use_cache', None)
+                    kwargs.pop('past_key_values', None)
+                    
                     # Get hidden states from the language model
                     outputs = self.model(
                         input_ids=input_ids,
@@ -722,8 +767,8 @@ def create_srde_model(
                     if hasattr(self.model, 'gradient_checkpointing_enable'):
                         self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs)
             
-            base_model = Ministral3ForCausalLM(full_model)
-            print(f"[SRDE] Created Ministral3ForCausalLM wrapper with lm_head")
+            base_model = Ministral3ForCausalLM(language_model, lm_head)
+            print(f"[SRDE] Created Ministral3ForCausalLM wrapper")
         else:
             raise RuntimeError(f"Failed to load base model '{model_name}': {e}")
     
