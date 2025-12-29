@@ -84,7 +84,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train SRDE on Mistral-3-14B (Robust)")
     
     # Model
-    parser.add_argument("--model_name", type=str, default="mistralai/Mistral-3-14B-Reasoning")
+    parser.add_argument("--model_name", type=str, default="mistralai/Ministral-3-14B-Reasoning-2512")
     parser.add_argument("--output_dir", type=str, default="./srde_checkpoints")
     parser.add_argument("--resume_from", type=str, default=None, help="Checkpoint to resume from")
     

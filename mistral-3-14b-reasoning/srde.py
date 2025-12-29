@@ -606,7 +606,7 @@ class SRDEModel(nn.Module):
 
 
 def create_srde_model(
-    model_name: str = "mistralai/Mistral-3-14B-Reasoning",
+    model_name: str = "mistralai/Ministral-3-14B-Reasoning-2512",
     config: Optional[SRDEConfig] = None,
     device_map: str = "auto",
     torch_dtype: torch.dtype = torch.bfloat16,

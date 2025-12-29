@@ -23,31 +23,36 @@ import numpy as np
 from tqdm import tqdm
 
 
-# Domain definitions (same as build_dataset.py)
+# Domain definitions - VERIFIED WORKING DATASETS
 DOMAINS = {
     0: {
         "name": "math",
         "description": "Advanced Math",
         "datasets": [
             ("gsm8k", "main", "train"),
-            ("lighteval/MATH", "all", "train"),
+            ("hendrycks/competition_math", None, "train"),
             ("meta-math/MetaMathQA", None, "train"),
+            ("microsoft/orca-math-word-problems-200k", None, "train"),
         ]
     },
     1: {
-        "name": "logic",
+        "name": "logic", 
         "description": "Formal Logic",
         "datasets": [
-            ("lucasmccabe/logiqa", None, "train"),
-            ("metaeval/reclor", None, "train"),
+            ("tasksource/bigbench", "logical_deduction_five_objects", "train"),
+            ("tasksource/bigbench", "logical_deduction_seven_objects", "train"),
+            ("tau/commonsense_qa", None, "train"),
+            ("Rowan/hellaswag", None, "train"),
         ]
     },
     2: {
         "name": "code",
-        "description": "Algorithm Design",
+        "description": "Algorithm Design", 
         "datasets": [
-            ("deepmind/code_contests", None, "train"),
-            ("codeparrot/apps", "all", "train"),
+            ("mbpp", "full", "train"),
+            ("openai/openai_humaneval", None, "test"),
+            ("m-a-p/CodeFeedback-Filtered-Instruction", None, "train"),
+            ("flytech/python-codes-25k", None, "train"),
         ]
     },
     3: {
@@ -56,22 +61,28 @@ DOMAINS = {
         "datasets": [
             ("allenai/sciq", None, "train"),
             ("allenai/ai2_arc", "ARC-Challenge", "train"),
+            ("allenai/ai2_arc", "ARC-Easy", "train"),
+            ("cais/mmlu", "college_physics", "test"),
+            ("cais/mmlu", "college_chemistry", "test"),
         ]
     },
     4: {
         "name": "planning",
         "description": "Multi-step Planning",
         "datasets": [
-            ("wics/strategy-qa", None, "train"),
-            ("hotpot_qa", "fullwiki", "train"),
+            ("hotpot_qa", "distractor", "train"),
+            ("tau/scrolls", "qasper", "train"),
+            ("apple/DataCompLM-DCLM-baseline", None, "train"),
         ]
     },
     5: {
         "name": "abstract",
         "description": "Abstract/Symbolic",
         "datasets": [
-            ("maveriq/bigbenchhard", None, "train"),
-            ("deepmind/aqua_rat", None, "train"),
+            ("tasksource/bigbench", "abstract_narrative_understanding", "train"),
+            ("tasksource/bigbench", "analogical_similarity", "train"),
+            ("deepmind/aqua_rat", "raw", "train"),
+            ("winogrande", "winogrande_xl", "train"),
         ]
     },
 }
@@ -86,7 +97,7 @@ def parse_args():
     
     # Optional
     parser.add_argument("--model_name", type=str, 
-                       default="mistralai/Mistral-3-14B-Reasoning")
+                       default="mistralai/Ministral-3-14B-Reasoning-2512")
     parser.add_argument("--examples_per_domain", type=int, default=10000)
     parser.add_argument("--max_length", type=int, default=2048)
     parser.add_argument("--hf_token", type=str, default=None,
