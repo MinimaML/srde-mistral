@@ -666,6 +666,7 @@ def create_srde_model(
         if "Mistral3Config" in str(e) or "ministral" in model_name.lower():
             print("[SRDE] Detected Mistral3/Ministral multimodal model, extracting text model...")
             from transformers import AutoModel
+            import torch.nn as nn
             
             # Load the full multimodal model
             full_model = AutoModel.from_pretrained(
@@ -673,24 +674,56 @@ def create_srde_model(
                 **model_kwargs
             )
             
-            # Extract the text/language model component
-            if hasattr(full_model, 'language_model'):
-                base_model = full_model.language_model
-            elif hasattr(full_model, 'text_model'):
-                base_model = full_model.text_model
-            elif hasattr(full_model, 'model'):
-                base_model = full_model.model
-            else:
-                # Try to use the model directly if it has lm_head
-                if hasattr(full_model, 'lm_head'):
-                    base_model = full_model
-                else:
-                    raise RuntimeError(
-                        f"Could not extract text model from {model_name}. "
-                        "Try using mistralai/Mistral-7B-v0.3 or Qwen/Qwen2.5-14B instead."
+            # Create a wrapper class that combines the text model with lm_head
+            class Ministral3ForCausalLM(nn.Module):
+                def __init__(self, full_model):
+                    super().__init__()
+                    self.model = full_model.language_model
+                    self.lm_head = full_model.lm_head
+                    self.config = full_model.config
+                    # Copy important attributes
+                    if hasattr(full_model, 'generation_config'):
+                        self.generation_config = full_model.generation_config
+                
+                def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
+                    # Get hidden states from the language model
+                    outputs = self.model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        **kwargs
                     )
+                    hidden_states = outputs[0] if isinstance(outputs, tuple) else outputs.last_hidden_state
+                    
+                    # Apply lm_head to get logits
+                    logits = self.lm_head(hidden_states)
+                    
+                    # Compute loss if labels provided
+                    loss = None
+                    if labels is not None:
+                        shift_logits = logits[..., :-1, :].contiguous()
+                        shift_labels = labels[..., 1:].contiguous()
+                        loss_fct = nn.CrossEntropyLoss()
+                        loss = loss_fct(
+                            shift_logits.view(-1, shift_logits.size(-1)),
+                            shift_labels.view(-1)
+                        )
+                    
+                    # Return in a format compatible with CausalLMOutput
+                    from transformers.modeling_outputs import CausalLMOutputWithPast
+                    return CausalLMOutputWithPast(
+                        loss=loss,
+                        logits=logits,
+                        past_key_values=getattr(outputs, 'past_key_values', None),
+                        hidden_states=getattr(outputs, 'hidden_states', None),
+                        attentions=getattr(outputs, 'attentions', None),
+                    )
+                
+                def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
+                    if hasattr(self.model, 'gradient_checkpointing_enable'):
+                        self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs)
             
-            print(f"[SRDE] Extracted text model: {type(base_model).__name__}")
+            base_model = Ministral3ForCausalLM(full_model)
+            print(f"[SRDE] Created Ministral3ForCausalLM wrapper with lm_head")
         else:
             raise RuntimeError(f"Failed to load base model '{model_name}': {e}")
     
