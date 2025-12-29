@@ -1,0 +1,17 @@
+# SRDE Build Artifacts
+srde_dataset_build/
+*.bin
+*.pyc
+__pycache__/
+
+# Checkpoints (too large for git)
+checkpoints/
+srde_checkpoints/
+
+# Environment
+.env
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
