@@ -656,12 +656,43 @@ def create_srde_model(
             model_kwargs["attn_implementation"] = "sdpa"
     
     try:
+        # First try standard loading
         base_model = AutoModelForCausalLM.from_pretrained(
             model_name,
             **model_kwargs
         )
-    except Exception as e:
-        raise RuntimeError(f"Failed to load base model '{model_name}': {e}")
+    except ValueError as e:
+        # Handle Mistral3/Ministral multimodal models
+        if "Mistral3Config" in str(e) or "ministral" in model_name.lower():
+            print("[SRDE] Detected Mistral3/Ministral multimodal model, extracting text model...")
+            from transformers import AutoModel
+            
+            # Load the full multimodal model
+            full_model = AutoModel.from_pretrained(
+                model_name,
+                **model_kwargs
+            )
+            
+            # Extract the text/language model component
+            if hasattr(full_model, 'language_model'):
+                base_model = full_model.language_model
+            elif hasattr(full_model, 'text_model'):
+                base_model = full_model.text_model
+            elif hasattr(full_model, 'model'):
+                base_model = full_model.model
+            else:
+                # Try to use the model directly if it has lm_head
+                if hasattr(full_model, 'lm_head'):
+                    base_model = full_model
+                else:
+                    raise RuntimeError(
+                        f"Could not extract text model from {model_name}. "
+                        "Try using mistralai/Mistral-7B-v0.3 or Qwen/Qwen2.5-14B instead."
+                    )
+            
+            print(f"[SRDE] Extracted text model: {type(base_model).__name__}")
+        else:
+            raise RuntimeError(f"Failed to load base model '{model_name}': {e}")
     
     print("[SRDE] Wrapping with SRDE...")
     
