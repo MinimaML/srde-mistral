@@ -89,4 +89,4 @@ python train.py \
 
 ## License
 
-MIT
+Apache License 2.0
