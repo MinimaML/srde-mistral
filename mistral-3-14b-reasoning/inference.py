@@ -17,7 +17,7 @@ def parse_args():
     parser.add_argument(
         "--model_name",
         type=str,
-        default="mistralai/Mistral-3-14B-Reasoning",
+        default="mistralai/Ministral-3-14B-Reasoning-2512",
         help="Base model name"
     )
     parser.add_argument(
