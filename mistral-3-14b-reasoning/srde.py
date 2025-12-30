@@ -400,25 +400,30 @@ class SRDELayer(nn.Module):
         
         logger.info(f"Layer {layer_idx}: {self.num_ffn_params:,} FFN params, {self.num_sparse:,} sparse")
         
+        
+        # Get dtype and device from base FFN
+        self.base_dtype = next(self.base_ffn.parameters()).dtype
+        self.base_device = next(self.base_ffn.parameters()).device
+        
         # Components
         self.mask_selector = LearnedMaskSelector(
             num_params=self.num_ffn_params,
             num_sparse=self.num_sparse,
             temperature=config.mask_temperature
-        )
+        ).to(device=self.base_device, dtype=self.base_dtype)
         
         self.vocabulary = SharedDeltaVocabulary(
             num_atoms=config.num_delta_atoms,
             num_sparse=self.num_sparse,
             num_experts=config.num_experts
-        )
+        ).to(device=self.base_device, dtype=self.base_dtype)
         
         self.experts = nn.ModuleList([
             SparseExpert(
                 expert_idx=i,
                 num_sparse=self.num_sparse,
                 vocabulary=self.vocabulary
-            )
+            ).to(device=self.base_device, dtype=self.base_dtype)
             for i in range(config.num_experts)
         ])
         
@@ -426,7 +431,7 @@ class SRDELayer(nn.Module):
             hidden_size=config.hidden_size,
             num_experts=config.num_experts,
             top_k=config.top_k
-        )
+        ).to(device=self.base_device, dtype=self.base_dtype)
         
         # Forward pass counter for debugging
         self._forward_count = 0
