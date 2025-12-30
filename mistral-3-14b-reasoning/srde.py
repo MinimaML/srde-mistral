@@ -90,16 +90,15 @@ class LearnedMaskSelector(nn.Module):
             raise ValueError(f"num_sparse must be positive, got {num_sparse}")
         if num_sparse > num_params:
             raise ValueError(f"num_sparse ({num_sparse}) cannot exceed num_params ({num_params})")
-        if temperature <= 0:
-            raise ValueError(f"temperature must be positive, got {temperature}")
         
         self.num_params = num_params
         self.num_sparse = num_sparse
         self._temperature = temperature
         
-        # Learnable logits for each parameter position
-        self.mask_logits = nn.Parameter(torch.zeros(num_params))
-        nn.init.normal_(self.mask_logits, mean=0.0, std=0.01)
+        # ZERO-PARAM: No learnable logits!
+        # Instead, we'll store the indices we've selected based on base model weights
+        self.register_buffer("indices", torch.zeros(num_sparse, dtype=torch.long))
+        self.initialized = False
     
     @property
     def temperature(self) -> float:
@@ -107,48 +106,42 @@ class LearnedMaskSelector(nn.Module):
     
     @temperature.setter
     def temperature(self, value: float):
-        if value <= 0:
-            raise ValueError(f"temperature must be positive, got {value}")
-        self._temperature = max(value, 1e-6)  # Prevent division by zero
+        pass # No-op for magnitude pruning
     
     def forward(self, hard: bool = True) -> torch.Tensor:
         """
-        Generate mask via Gumbel-softmax top-k selection.
+        Return the cached sparse indices.
+        NOTE: This expects 'update_indices' to be called externally with weights.
         """
-        device = self.mask_logits.device
-        
-        # Gumbel noise for stochastic selection
-        if self.training:
-            # Use more numerically stable Gumbel sampling
-            uniform = torch.rand_like(self.mask_logits).clamp(1e-10, 1 - 1e-10)
-            gumbel_noise = -torch.log(-torch.log(uniform))
-            noisy_logits = (self.mask_logits + gumbel_noise) / self._temperature
-        else:
-            noisy_logits = self.mask_logits / self._temperature
-        
-        # Clamp for numerical stability
-        noisy_logits = torch.clamp(noisy_logits, min=-50, max=50)
-        
-        # Soft mask via sigmoid
-        soft_mask = torch.sigmoid(noisy_logits)
-        
-        if hard:
-            # Straight-through estimator
-            _, indices = torch.topk(noisy_logits, min(self.num_sparse, len(noisy_logits)))
-            hard_mask = torch.zeros_like(soft_mask)
-            hard_mask[indices] = 1.0
-            return hard_mask - soft_mask.detach() + soft_mask
-        
-        return soft_mask
+        # Return a mask for compatibility with old interface, but indices are preferred
+        mask = torch.zeros(self.num_params, device=self.indices.device)
+        mask[self.indices] = 1.0
+        return mask
     
+    def update_indices(self, base_weight: torch.Tensor):
+        """
+        Update selected indices based on base weight magnitude.
+        Call this once at startup or periodically.
+        """
+        with torch.no_grad():
+            flat_weight = base_weight.flatten()
+            # Select weights with largest absolute magnitude
+            _, indices = torch.topk(flat_weight.abs(), self.num_sparse)
+            
+            # Ensure indices are on correct device before copying to buffer
+            if indices.device != self.indices.device:
+                indices = indices.to(self.indices.device)
+                
+            self.indices.copy_(indices)
+            self.initialized = True
+            
     def get_mask_indices(self) -> torch.Tensor:
-        """Get indices of top-k positions (for inference)."""
-        _, indices = torch.topk(self.mask_logits, min(self.num_sparse, len(self.mask_logits)))
-        return indices
+        """Get indices of top-k positions."""
+        return self.indices.clone()
     
     def set_temperature(self, temperature: float):
-        """Update temperature for annealing."""
-        self.temperature = temperature
+        """Update temperature (no-op)."""
+        pass
 
 
 class SharedDeltaVocabulary(nn.Module):
@@ -411,6 +404,15 @@ class SRDELayer(nn.Module):
             num_sparse=self.num_sparse,
             temperature=config.mask_temperature
         ).to(device=self.base_device, dtype=self.base_dtype)
+        
+        # Initialize sparsity mask based on base weight magnitude
+        # Use simple concatenation of all params to find global top-k
+        with torch.no_grad():
+            all_params = []
+            for p in self.base_ffn.parameters():
+                all_params.append(p.flatten())
+            all_params = torch.cat(all_params)
+            self.mask_selector.update_indices(all_params)
         
         self.vocabulary = SharedDeltaVocabulary(
             num_atoms=config.num_delta_atoms,
