@@ -1,5 +1,5 @@
 torch>=2.1.0
-transformers>=4.36.0
+git+https://github.com/huggingface/transformers
 accelerate>=0.25.0
 bitsandbytes>=0.41.0
 safetensors>=0.4.0
