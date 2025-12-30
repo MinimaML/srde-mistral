@@ -179,7 +179,7 @@ class SRDEConfig:
             self.sparse_params_per_expert * self.num_experts +  # importance scores
             self.num_delta_atoms * self.sparse_params_per_expert +  # shared atoms
             self.num_experts * self.num_delta_atoms +  # atom weights per expert
-            self.ffn_params_per_layer +  # mask logits
+            # self.ffn_params_per_layer +  # mask logits (REMOVED: Zero-param magnitude pruning)
             self.hidden_size * self.num_experts  # router
         )
         return per_layer * len(self.srde_layers or [])
