@@ -499,6 +499,10 @@ class SRDELayer(nn.Module):
                 expert_deltas.append(expert.get_weighted_delta())
             expert_deltas = torch.stack(expert_deltas)  # [num_experts, num_sparse]
             
+            # Ensure deltas are on correct device
+            if expert_deltas.device != base_output.device:
+                expert_deltas = expert_deltas.to(base_output.device)
+            
             # Mean delta scale per expert
             delta_scale = expert_deltas.mean(dim=1)  # [num_experts]
             
@@ -516,7 +520,11 @@ class SRDELayer(nn.Module):
             output = check_tensor_health(output, "srde_output")
             
             # Store auxiliary loss for later aggregation
-            self._last_aux_loss = self._compute_aux_loss(router_logits)
+            aux_loss = self._compute_aux_loss(router_logits)
+            if aux_loss.device != hidden_states.device:
+                aux_loss = aux_loss.to(hidden_states.device)
+            self._last_aux_loss = aux_loss
+            
             self._last_router_logits = router_logits
             self._last_router_weights = router_weights
             self._last_selected_experts = selected_experts
@@ -527,12 +535,17 @@ class SRDELayer(nn.Module):
             logger.error(f"Error in SRDELayer forward (call {self._forward_count}): {e}")
             # Fallback: return base FFN output
             base_output = self.base_ffn(hidden_states)
-            self._last_aux_loss = torch.tensor(0.0, device=hidden_states.device)
+            # Ensure fallback loss requires grad to avoid backward error
+            self._last_aux_loss = torch.tensor(0.0, device=hidden_states.device, requires_grad=True)
             return base_output
     
     def get_last_aux_loss(self) -> torch.Tensor:
         """Get the auxiliary loss from the last forward pass."""
-        return getattr(self, '_last_aux_loss', torch.tensor(0.0))
+        # Ensure it requires grad
+        loss = getattr(self, '_last_aux_loss', torch.tensor(0.0))
+        if not loss.requires_grad:
+            loss = loss.clone().detach().requires_grad_(True)
+        return loss
     
     def _compute_aux_loss(self, router_logits: torch.Tensor) -> torch.Tensor:
         """Compute load balancing auxiliary loss."""
