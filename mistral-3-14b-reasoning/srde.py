@@ -370,8 +370,8 @@ class SRDELayer(nn.Module):
         self,
         hidden_states: torch.Tensor,
         **kwargs
-    ) -> SRDEOutput:
-        """Forward pass with SRDE modifications."""
+    ) -> torch.Tensor:
+        """Forward pass with SRDE modifications. Returns tensor for drop-in replacement."""
         self._forward_count += 1
         
         try:
@@ -411,28 +411,24 @@ class SRDELayer(nn.Module):
             output = base_output + output_delta
             output = check_tensor_health(output, "srde_output")
             
-            # Auxiliary loss
-            aux_loss = self._compute_aux_loss(router_logits)
+            # Store auxiliary loss for later aggregation
+            self._last_aux_loss = self._compute_aux_loss(router_logits)
+            self._last_router_logits = router_logits
+            self._last_router_weights = router_weights
+            self._last_selected_experts = selected_experts
             
-            return SRDEOutput(
-                output=output,
-                router_logits=router_logits,
-                router_weights=router_weights,
-                selected_experts=selected_experts,
-                aux_loss=aux_loss
-            )
+            return output
         
         except Exception as e:
             logger.error(f"Error in SRDELayer forward (call {self._forward_count}): {e}")
             # Fallback: return base FFN output
             base_output = self.base_ffn(hidden_states)
-            return SRDEOutput(
-                output=base_output,
-                router_logits=torch.zeros(hidden_states.shape[:-1] + (self.config.num_experts,), device=hidden_states.device),
-                router_weights=torch.ones(hidden_states.shape[:-1] + (self.config.top_k,), device=hidden_states.device) / self.config.top_k,
-                selected_experts=torch.zeros(hidden_states.shape[:-1] + (self.config.top_k,), dtype=torch.long, device=hidden_states.device),
-                aux_loss=torch.tensor(0.0, device=hidden_states.device)
-            )
+            self._last_aux_loss = torch.tensor(0.0, device=hidden_states.device)
+            return base_output
+    
+    def get_last_aux_loss(self) -> torch.Tensor:
+        """Get the auxiliary loss from the last forward pass."""
+        return getattr(self, '_last_aux_loss', torch.tensor(0.0))
     
     def _compute_aux_loss(self, router_logits: torch.Tensor) -> torch.Tensor:
         """Compute load balancing auxiliary loss."""
@@ -479,22 +475,26 @@ class SRDEModel(nn.Module):
         logger.info(f"Created SRDE model with {len(self.srde_layers)} SRDE layers")
     
     def _wrap_ffn_layers(self):
-        """Identify and wrap FFN layers."""
+        """Identify and wrap FFN layers by replacing them in the model."""
         layers = self._get_transformer_layers()
         
         for idx in self.config.srde_layers:
             if idx < len(layers):
                 try:
                     layer = layers[idx]
-                    ffn = self._get_ffn_from_layer(layer)
+                    ffn_attr = self._get_ffn_attr_name(layer)
                     
-                    if ffn is not None:
+                    if ffn_attr is not None:
+                        ffn = getattr(layer, ffn_attr)
                         srde_layer = SRDELayer(
                             base_ffn=ffn,
                             config=self.config,
                             layer_idx=idx
                         )
+                        # Replace the original FFN with SRDE-wrapped version
+                        setattr(layer, ffn_attr, srde_layer)
                         self.srde_layers[str(idx)] = srde_layer
+                        logger.info(f"Wrapped layer {idx}.{ffn_attr} with SRDE")
                 except Exception as e:
                     logger.warning(f"Failed to wrap layer {idx}: {e}")
     
@@ -503,6 +503,7 @@ class SRDEModel(nn.Module):
         # Try various common attribute paths
         search_paths = [
             ('model', 'layers'),
+            ('model', 'model', 'layers'),  # For nested wrappers like Ministral3ForCausalLM
             ('model', 'decoder', 'layers'),
             ('transformer', 'h'),
             ('gpt_neox', 'layers'),
@@ -526,11 +527,18 @@ class SRDEModel(nn.Module):
             "Supported: model.layers, transformer.h, etc."
         )
     
-    def _get_ffn_from_layer(self, layer: nn.Module) -> Optional[nn.Module]:
-        """Extract FFN/MLP from a transformer layer."""
+    def _get_ffn_attr_name(self, layer: nn.Module) -> Optional[str]:
+        """Get the attribute name of FFN/MLP in a transformer layer."""
         for attr in ['mlp', 'ffn', 'feed_forward', 'ff', 'dense']:
             if hasattr(layer, attr):
-                return getattr(layer, attr)
+                return attr
+        return None
+    
+    def _get_ffn_from_layer(self, layer: nn.Module) -> Optional[nn.Module]:
+        """Extract FFN/MLP from a transformer layer."""
+        attr = self._get_ffn_attr_name(layer)
+        if attr:
+            return getattr(layer, attr)
         return None
     
     def forward(
@@ -544,7 +552,7 @@ class SRDEModel(nn.Module):
         if input_ids is None:
             raise ValueError("input_ids cannot be None")
         
-        # Forward through base model
+        # Forward through base model (SRDE layers are now embedded in the model)
         outputs = self.base_model(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -552,8 +560,13 @@ class SRDEModel(nn.Module):
             **kwargs
         )
         
-        # Aggregate aux losses
-        total_aux_loss = torch.tensor(0.0, device=input_ids.device)
+        # Aggregate aux losses from all SRDE layers
+        total_aux_loss = torch.tensor(0.0, device=input_ids.device, requires_grad=True)
+        for srde_layer in self.srde_layers.values():
+            layer_aux_loss = srde_layer.get_last_aux_loss()
+            if layer_aux_loss.device != total_aux_loss.device:
+                layer_aux_loss = layer_aux_loss.to(total_aux_loss.device)
+            total_aux_loss = total_aux_loss + layer_aux_loss
         
         return {
             'logits': getattr(outputs, 'logits', outputs[0] if isinstance(outputs, tuple) else None),
