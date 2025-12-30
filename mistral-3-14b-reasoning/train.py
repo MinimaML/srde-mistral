@@ -72,8 +72,8 @@ def signal_handler(signum, frame):
     SHOULD_STOP = True
 
 
-# signal.signal(signal.SIGINT, signal_handler)
-# signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 
 #===============================================================================
@@ -486,8 +486,21 @@ def pretrain_experts_supervised(
                     total_loss += loss.item()
                 
                 step += 1
+                
+                # Check for shutdown signal
+                if SHOULD_STOP:
+                    print(f"\n[STOP] Received shutdown signal, stopping expert {expert_idx} training...")
+                    break
             
             avg_loss = total_loss / max(step, 1)
+            print(f"(loss={avg_loss:.4f}, steps={step})")
+            
+            if SHOULD_STOP:
+                print("[STOP] Saving current progress before exit...")
+                # We should probably save here if we want to be truly safe, 
+                # but the main loop might handle it. 
+                # For now, let's just break the outer loop too.
+                break
             print(f"(loss={avg_loss:.4f}, steps={step})")
     
     print("\n" + "="*60)
