@@ -72,8 +72,8 @@ def signal_handler(signum, frame):
     SHOULD_STOP = True
 
 
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
+# signal.signal(signal.SIGINT, signal_handler)
+# signal.signal(signal.SIGTERM, signal_handler)
 
 
 #===============================================================================
