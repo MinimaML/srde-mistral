@@ -11,7 +11,7 @@ from datasets import load_dataset
 DATASETS_TO_CHECK = [
     # Math
     ("gsm8k", "main", "train"),
-    ("hendrycks/competition_math", None, "train"),
+    ("qwedsacf/competition_math", None, "train"),
     ("meta-math/MetaMathQA", None, "train"),
     ("microsoft/orca-math-word-problems-200k", None, "train"),
     
