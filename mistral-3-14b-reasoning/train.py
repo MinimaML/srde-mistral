@@ -130,6 +130,14 @@ def parse_args():
     # Flash Attention 3 (H100/H200)
     parser.add_argument("--flash_attention", action="store_true", help="Use Flash Attention 3 (requires H100/H200)")
     
+    # Supervised expert training (Phase 1: pre-train experts on domain data)
+    parser.add_argument("--supervised_experts", action="store_true", 
+                       help="Two-phase training: pre-train experts on domain-specific data, then train router")
+    parser.add_argument("--expert_pretrain_steps", type=int, default=1000,
+                       help="Steps to pre-train each expert on its domain data")
+    parser.add_argument("--jsonl_data", type=str, default=None,
+                       help="JSONL file with domain labels (required for --supervised_experts)")
+    
     return parser.parse_args()
 
 
@@ -180,6 +188,54 @@ class RobustDataset(Dataset):
         except Exception as e:
             print(f"Error tokenizing example {idx}: {e}")
             # Return a dummy example
+            dummy = torch.zeros(self.max_length, dtype=torch.long)
+            return {"input_ids": dummy, "attention_mask": dummy, "labels": dummy}
+
+
+class DomainDataset(Dataset):
+    """Dataset filtered by domain_id for supervised expert training."""
+    
+    def __init__(self, file_path: str, tokenizer, max_length: int, domain_id: int):
+        self.tokenizer = tokenizer
+        self.max_length = max_length
+        self.domain_id = domain_id
+        self.data = []
+        
+        print(f"Loading domain {domain_id} data from {file_path}...")
+        
+        with open(file_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                if line.strip():
+                    try:
+                        item = json.loads(line)
+                        if item.get("domain_id") == domain_id:
+                            self.data.append(item)
+                    except json.JSONDecodeError:
+                        continue
+        
+        print(f"  Loaded {len(self.data)} examples for domain {domain_id}")
+    
+    def __len__(self):
+        return len(self.data)
+    
+    def __getitem__(self, idx):
+        item = self.data[idx]
+        text = item.get("text", "")
+        
+        try:
+            encodings = self.tokenizer(
+                text,
+                truncation=True,
+                max_length=self.max_length,
+                padding="max_length",
+                return_tensors="pt"
+            )
+            return {
+                "input_ids": encodings["input_ids"].squeeze(0),
+                "attention_mask": encodings["attention_mask"].squeeze(0),
+                "labels": encodings["input_ids"].squeeze(0)
+            }
+        except Exception as e:
             dummy = torch.zeros(self.max_length, dtype=torch.long)
             return {"input_ids": dummy, "attention_mask": dummy, "labels": dummy}
 
@@ -330,6 +386,107 @@ def find_latest_checkpoint(output_dir: str) -> Optional[str]:
 
 
 #===============================================================================
+# SUPERVISED EXPERT PRE-TRAINING (Phase 1)
+#===============================================================================
+
+def pretrain_experts_supervised(
+    model: SRDEModel,
+    tokenizer,
+    jsonl_path: str,
+    num_domains: int,
+    steps_per_expert: int,
+    max_length: int,
+    learning_rate: float = 1e-4,
+    device: str = "cuda"
+):
+    """
+    Phase 1: Pre-train each expert on its domain-specific data.
+    
+    This gives each expert a head start on its specialization before
+    the router learns to select them.
+    """
+    print("\n" + "="*60)
+    print("PHASE 1: Supervised Expert Pre-Training")
+    print("="*60)
+    
+    # We'll train experts in each SRDE layer
+    for layer_key, srde_layer in model.srde_layers.items():
+        print(f"\n[Layer {layer_key}] Pre-training {len(srde_layer.experts)} experts...")
+        
+        for expert_idx in range(len(srde_layer.experts)):
+            # Map expert to domain (expert 0 -> domain 0, etc.)
+            domain_id = expert_idx % num_domains
+            
+            print(f"  Expert {expert_idx} <- Domain {domain_id}", end=" ", flush=True)
+            
+            # Create domain-specific dataset
+            domain_dataset = DomainDataset(
+                jsonl_path, tokenizer, max_length, domain_id
+            )
+            
+            if len(domain_dataset) == 0:
+                print("(no data, skipping)")
+                continue
+            
+            domain_loader = DataLoader(
+                domain_dataset, batch_size=1, shuffle=True, num_workers=0
+            )
+            
+            # Get expert parameters
+            expert = srde_layer.experts[expert_idx]
+            expert_params = [p for p in expert.parameters() if p.requires_grad]
+            
+            if not expert_params:
+                print("(no trainable params, skipping)")
+                continue
+            
+            optimizer = AdamW(expert_params, lr=learning_rate)
+            
+            # Pre-train this expert
+            expert.train()
+            total_loss = 0.0
+            step = 0
+            
+            for batch in domain_loader:
+                if step >= steps_per_expert:
+                    break
+                
+                input_ids = batch["input_ids"].to(device)
+                attention_mask = batch["attention_mask"].to(device)
+                labels = batch["labels"].to(device)
+                
+                optimizer.zero_grad()
+                
+                # Forward through the full model but only update this expert
+                with torch.no_grad():
+                    outputs = model(input_ids, attention_mask=attention_mask)
+                
+                # Compute a simple reconstruction loss for the expert
+                # (This is a simplified approach - expert learns to minimize task loss)
+                logits = outputs.get('logits')
+                if logits is not None:
+                    loss = torch.nn.functional.cross_entropy(
+                        logits[:, :-1].reshape(-1, logits.size(-1)),
+                        labels[:, 1:].reshape(-1),
+                        ignore_index=0
+                    )
+                    
+                    # Only backprop through the expert
+                    loss.backward()
+                    optimizer.step()
+                    total_loss += loss.item()
+                
+                step += 1
+            
+            avg_loss = total_loss / max(step, 1)
+            print(f"(loss={avg_loss:.4f}, steps={step})")
+    
+    print("\n" + "="*60)
+    print("Phase 1 Complete - All experts pre-trained on domain data")
+    print("="*60 + "\n")
+
+
+#===============================================================================
 # TRAINING
 #===============================================================================
 
@@ -450,6 +607,30 @@ def main():
     if args.compile and hasattr(torch, 'compile'):
         print(f"  Compiling model with torch.compile (mode={args.compile_mode})...")
         model = torch.compile(model, mode=args.compile_mode)
+    
+    #---------------------------------------------------------------------------
+    # Phase 1: Supervised Expert Pre-Training (optional)
+    #---------------------------------------------------------------------------
+    if args.supervised_experts:
+        if not args.jsonl_data:
+            # Try to find jsonl in work_dir
+            potential_jsonl = Path(args.pretokenized_dir).parent / "data.jsonl" if args.pretokenized_dir else None
+            if potential_jsonl and potential_jsonl.exists():
+                args.jsonl_data = str(potential_jsonl)
+            else:
+                raise ValueError("--supervised_experts requires --jsonl_data with domain labels")
+        
+        print(f"\n[2.5/6] Phase 1: Supervised Expert Pre-Training...")
+        pretrain_experts_supervised(
+            model=model,
+            tokenizer=tokenizer,
+            jsonl_path=args.jsonl_data,
+            num_domains=6,  # math, logic, code, science, planning, abstract
+            steps_per_expert=args.expert_pretrain_steps,
+            max_length=args.max_length,
+            learning_rate=args.learning_rate,
+            device="cuda" if torch.cuda.is_available() else "cpu"
+        )
     
     #---------------------------------------------------------------------------
     # Load dataset
