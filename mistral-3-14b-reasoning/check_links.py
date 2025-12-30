@@ -10,7 +10,7 @@ import urllib.error
 
 DATASETS = [
     "gsm8k",
-    "hendrycks/competition_math",
+    "qwedsacf/competition_math",
     "meta-math/MetaMathQA",
     "microsoft/orca-math-word-problems-200k",
     "tasksource/bigbench",
