@@ -466,12 +466,12 @@ def pretrain_experts_supervised(
                 
                 optimizer.zero_grad()
                 
-                # Forward through the full model but only update this expert
-                with torch.no_grad():
-                    outputs = model(input_ids, attention_mask=attention_mask)
+                # Forward through the full model
+                # Base model is frozen, only expert will accumulate gradients
+                outputs = model(input_ids, attention_mask=attention_mask)
                 
                 # Compute a simple reconstruction loss for the expert
-                # (This is a simplified approach - expert learns to minimize task loss)
+                # Expert learns to minimize task loss
                 logits = outputs.get('logits')
                 if logits is not None:
                     loss = torch.nn.functional.cross_entropy(
