@@ -710,6 +710,8 @@ def main():
         torch_dtype=dtype,
         use_flash_attention=args.flash_attention
     )
+    if torch.cuda.is_available():
+        model = model.to("cuda")
     
     if args.gradient_checkpointing:
         model.base_model.gradient_checkpointing_enable()
