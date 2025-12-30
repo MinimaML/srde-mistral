@@ -138,6 +138,15 @@ def parse_args():
     parser.add_argument("--jsonl_data", type=str, default=None,
                        help="JSONL file with domain labels (required for --supervised_experts)")
     
+    # Router warm-start
+    parser.add_argument("--warm_start", action="store_true",
+                       help="Initialize routers from hidden state clustering (K-means)")
+    
+    # Progressive expert unlocking
+    parser.add_argument("--progressive_unlock", type=str, default=None,
+                       choices=["linear", "warmup", "all"],
+                       help="Progressive expert unlocking schedule (linear=gradual, warmup=1 then all)")
+    
     return parser.parse_args()
 
 
@@ -484,6 +493,108 @@ def pretrain_experts_supervised(
     print("\n" + "="*60)
     print("Phase 1 Complete - All experts pre-trained on domain data")
     print("="*60 + "\n")
+
+
+def warm_start_routers(
+    model: SRDEModel,
+    tokenizer,
+    jsonl_path: str,
+    num_samples: int = 1000,
+    max_length: int = 512,
+    device: str = "cuda"
+):
+    """
+    Warm-start all router weights from hidden state clustering.
+    
+    Collects hidden states from sample data and uses K-means to 
+    initialize router weights for better expert assignment from the start.
+    """
+    print("\n[WARM-START] Initializing routers from hidden state clustering...")
+    
+    # Collect sample hidden states
+    hidden_samples = []
+    
+    with open(jsonl_path, 'r') as f:
+        lines = [l for l in f if l.strip()][:num_samples]
+    
+    model.eval()
+    with torch.no_grad():
+        for line in lines[:min(100, len(lines))]:  # Limit for speed
+            try:
+                item = json.loads(line)
+                text = item.get("text", "")
+                
+                encodings = tokenizer(
+                    text,
+                    truncation=True,
+                    max_length=max_length,
+                    return_tensors="pt"
+                )
+                
+                input_ids = encodings["input_ids"].to(device)
+                
+                # Get hidden states from a forward pass
+                outputs = model(input_ids, output_hidden_states=True)
+                hidden = outputs.get('hidden_states')
+                if hidden is not None and len(hidden) > 0:
+                    # Use last hidden state, average across sequence
+                    last_hidden = hidden[-1].mean(dim=1)  # [batch, hidden]
+                    hidden_samples.append(last_hidden.cpu())
+            except Exception as e:
+                continue
+    
+    if not hidden_samples:
+        print("[WARM-START] No hidden states collected, skipping")
+        return
+    
+    hidden_states = torch.cat(hidden_samples, dim=0)
+    print(f"[WARM-START] Collected {hidden_states.shape[0]} hidden state samples")
+    
+    # Warm-start each router
+    for layer_key, srde_layer in model.srde_layers.items():
+        srde_layer.router.warm_start_from_hidden_states(hidden_states, method="kmeans")
+    
+    print("[WARM-START] All routers initialized from K-means clustering")
+    model.train()
+
+
+def progressive_unlock_schedule(
+    model: SRDEModel,
+    current_step: int,
+    total_steps: int,
+    unlock_schedule: str = "linear"
+) -> int:
+    """
+    Progressively unlock experts based on training progress.
+    
+    Returns the number of experts that should be unlocked at this step.
+    """
+    num_experts = model.config.num_experts
+    
+    if unlock_schedule == "linear":
+        # Unlock one expert at a time, evenly spaced
+        experts_per_chunk = total_steps // num_experts
+        unlocked = min(num_experts, (current_step // experts_per_chunk) + 1)
+    elif unlock_schedule == "warmup":
+        # Start with 1 expert, unlock rest after 10% of training
+        warmup_steps = total_steps // 10
+        if current_step < warmup_steps:
+            unlocked = 1
+        else:
+            unlocked = num_experts
+    elif unlock_schedule == "all":
+        # All experts from the start
+        unlocked = num_experts
+    else:
+        unlocked = num_experts
+    
+    # Apply to all SRDE layers
+    for layer_key, srde_layer in model.srde_layers.items():
+        current_unlocked = srde_layer.get_unlocked_expert_count()
+        if current_unlocked != unlocked:
+            srde_layer.set_unlocked_experts(list(range(unlocked)))
+    
+    return unlocked
 
 
 #===============================================================================

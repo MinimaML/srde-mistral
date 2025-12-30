@@ -302,6 +302,71 @@ class SRDERouter(nn.Module):
         router_weights = check_tensor_health(router_weights, "router_weights")
         
         return router_logits, router_weights, top_indices
+    
+    def warm_start_from_hidden_states(
+        self,
+        hidden_states: torch.Tensor,
+        method: str = "kmeans"
+    ):
+        """
+        Initialize router weights from hidden state clustering.
+        
+        This gives the router a head start by learning cluster centers
+        from the data distribution before training.
+        
+        Args:
+            hidden_states: [num_samples, hidden_size] sample hidden states
+            method: "kmeans" or "random" (random projection baseline)
+        """
+        device = self.gate.weight.device
+        hidden_states = hidden_states.to(device).float()
+        
+        if method == "kmeans":
+            # Simple K-means clustering
+            num_samples = hidden_states.shape[0]
+            num_experts = self.num_experts
+            
+            # Initialize centroids randomly from data
+            indices = torch.randperm(num_samples)[:num_experts]
+            centroids = hidden_states[indices].clone()
+            
+            # Run a few K-means iterations
+            for _ in range(10):
+                # Assign points to nearest centroid
+                distances = torch.cdist(hidden_states, centroids)
+                assignments = distances.argmin(dim=1)
+                
+                # Update centroids
+                new_centroids = torch.zeros_like(centroids)
+                counts = torch.zeros(num_experts, device=device)
+                for i in range(num_experts):
+                    mask = (assignments == i)
+                    if mask.any():
+                        new_centroids[i] = hidden_states[mask].mean(dim=0)
+                        counts[i] = mask.sum()
+                    else:
+                        new_centroids[i] = centroids[i]
+                
+                centroids = new_centroids
+            
+            # Set router weights to point toward centroids
+            # The gate projects hidden_states to expert logits
+            # We want: gate(centroid_i) to have highest value at position i
+            with torch.no_grad():
+                # Normalize centroids and use as gate weights
+                normalized_centroids = F.normalize(centroids, dim=1)
+                self.gate.weight.copy_(normalized_centroids)
+            
+            logger.info(f"Router warm-started from K-means clustering ({num_samples} samples)")
+        
+        elif method == "random":
+            # Random orthogonal initialization (baseline)
+            with torch.no_grad():
+                nn.init.orthogonal_(self.gate.weight)
+            logger.info("Router warm-started with orthogonal initialization")
+        
+        else:
+            raise ValueError(f"Unknown warm-start method: {method}")
 
 
 class SRDELayer(nn.Module):
@@ -365,6 +430,45 @@ class SRDELayer(nn.Module):
         
         # Forward pass counter for debugging
         self._forward_count = 0
+        
+        # Progressive unlocking state
+        self._unlocked_experts = set(range(config.num_experts))  # All unlocked by default
+    
+    def lock_expert(self, expert_idx: int):
+        """Lock an expert (freeze and exclude from routing)."""
+        if expert_idx < len(self.experts):
+            self._unlocked_experts.discard(expert_idx)
+            for param in self.experts[expert_idx].parameters():
+                param.requires_grad = False
+            logger.info(f"Layer {self.layer_idx}: Locked expert {expert_idx}")
+    
+    def unlock_expert(self, expert_idx: int):
+        """Unlock an expert (unfreeze and include in routing)."""
+        if expert_idx < len(self.experts):
+            self._unlocked_experts.add(expert_idx)
+            for param in self.experts[expert_idx].parameters():
+                param.requires_grad = True
+            logger.info(f"Layer {self.layer_idx}: Unlocked expert {expert_idx}")
+    
+    def lock_all_experts(self):
+        """Lock all experts."""
+        for i in range(len(self.experts)):
+            self.lock_expert(i)
+    
+    def unlock_all_experts(self):
+        """Unlock all experts."""
+        for i in range(len(self.experts)):
+            self.unlock_expert(i)
+    
+    def set_unlocked_experts(self, expert_indices: List[int]):
+        """Set exactly which experts are unlocked."""
+        self.lock_all_experts()
+        for idx in expert_indices:
+            self.unlock_expert(idx)
+    
+    def get_unlocked_expert_count(self) -> int:
+        """Get number of currently unlocked experts."""
+        return len(self._unlocked_experts)
     
     def forward(
         self,
