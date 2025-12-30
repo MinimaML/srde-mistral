@@ -9,25 +9,25 @@ import urllib.request
 import urllib.error
 
 DATASETS = [
-    "gsm8k",
+    "openai/gsm8k",
     "qwedsacf/competition_math",
     "meta-math/MetaMathQA",
     "microsoft/orca-math-word-problems-200k",
     "tasksource/bigbench",
     "tau/commonsense_qa",
     "Rowan/hellaswag",
-    "mbpp",
+    "google-research-datasets/mbpp",
     "openai/openai_humaneval",
     "m-a-p/CodeFeedback-Filtered-Instruction",
     "flytech/python-codes-25k",
     "allenai/sciq",
     "allenai/ai2_arc",
     "cais/mmlu",
-    "hotpot_qa",
+    "hotpotqa/hotpot_qa",
     "tau/scrolls",
     "apple/DataCompLM-DCLM-baseline",
     "deepmind/aqua_rat",
-    "winogrande"
+    "allenai/winogrande"
 ]
 
 def check_url(dataset_name):

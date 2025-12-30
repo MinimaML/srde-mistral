@@ -29,7 +29,7 @@ DOMAINS = {
         "name": "math",
         "description": "Advanced Math",
         "datasets": [
-            ("gsm8k", "main", "train"),
+            ("openai/gsm8k", "main", "train"),
             ("qwedsacf/competition_math", None, "train"),
             ("meta-math/MetaMathQA", None, "train"),
             ("microsoft/orca-math-word-problems-200k", None, "train"),
@@ -49,7 +49,7 @@ DOMAINS = {
         "name": "code",
         "description": "Algorithm Design", 
         "datasets": [
-            ("mbpp", "full", "train"),
+            ("google-research-datasets/mbpp", "full", "train"),
             ("openai/openai_humaneval", None, "test"),
             ("m-a-p/CodeFeedback-Filtered-Instruction", None, "train"),
             ("flytech/python-codes-25k", None, "train"),
@@ -70,7 +70,7 @@ DOMAINS = {
         "name": "planning",
         "description": "Multi-step Planning",
         "datasets": [
-            ("hotpot_qa", "distractor", "train"),
+            ("hotpotqa/hotpot_qa", "distractor", "train"),
             ("tau/scrolls", "qasper", "train"),
             ("apple/DataCompLM-DCLM-baseline", None, "train"),
         ]
@@ -82,7 +82,7 @@ DOMAINS = {
             ("tasksource/bigbench", "abstract_narrative_understanding", "train"),
             ("tasksource/bigbench", "analogical_similarity", "train"),
             ("deepmind/aqua_rat", "raw", "train"),
-            ("winogrande", "winogrande_xl", "train"),
+            ("allenai/winogrande", "winogrande_xl", "train"),
         ]
     },
 }
