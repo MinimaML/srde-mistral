@@ -510,7 +510,7 @@ def pretrain_experts_supervised(
         torch.save({
             'layer_idx': layer_key,
             'model_state_dict': model.state_dict(),
-            'completed_layers': layer_key + 1
+            'completed_layers': int(layer_key) + 1
         }, layer_checkpoint_path)
         print(f"  Checkpoint saved to {layer_checkpoint_path}")
         
