@@ -419,8 +419,36 @@ def pretrain_experts_supervised(
     print("PHASE 1: Supervised Expert Pre-Training")
     print("="*60)
     
+    # Check for existing pretrain checkpoints to resume from
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    
+    completed_layers = set()
+    for ckpt_file in output_path.glob("pretrain_layer_*.pt"):
+        try:
+            layer_num = int(ckpt_file.stem.split("_")[-1])
+            completed_layers.add(layer_num)
+        except ValueError:
+            continue
+    
+    if completed_layers:
+        # Load the latest checkpoint to restore model state
+        latest_layer = max(completed_layers)
+        latest_ckpt = output_path / f"pretrain_layer_{latest_layer}.pt"
+        print(f"\n[RESUME] Found {len(completed_layers)} completed layers, loading from layer {latest_layer}...")
+        checkpoint = torch.load(latest_ckpt, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        print(f"[RESUME] Model state restored. Skipping layers: {sorted(completed_layers)}")
+    
     # We'll train experts in each SRDE layer
     for layer_key, srde_layer in model.srde_layers.items():
+        layer_idx = int(layer_key)
+        
+        # Skip already completed layers
+        if layer_idx in completed_layers:
+            print(f"\n[Layer {layer_key}] Already completed, skipping...")
+            continue
+        
         print(f"\n[Layer {layer_key}] Pre-training {len(srde_layer.experts)} experts...")
         
         for expert_idx in range(len(srde_layer.experts)):
