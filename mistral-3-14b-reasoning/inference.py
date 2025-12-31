@@ -37,6 +37,19 @@ def parse_args():
     parser.add_argument("--top_p", type=float, default=0.9)
     parser.add_argument("--stream", action="store_true", default=True)
     
+    # Extended reasoning options
+    parser.add_argument(
+        "--extended_thinking",
+        action="store_true",
+        help="Enable extended reasoning mode (longer generation, self-check prompt)"
+    )
+    parser.add_argument(
+        "--best_of_n",
+        type=int,
+        default=1,
+        help="Generate N answers and return the best/most common (majority vote)"
+    )
+    
     # SRDE config (should match training)
     parser.add_argument("--num_experts", type=int, default=8)
     parser.add_argument("--top_k", type=int, default=2)
@@ -70,7 +83,17 @@ def load_model(args):
 
 
 def generate(model, tokenizer, prompt: str, args):
-    """Generate text from prompt."""
+    """Generate text from prompt with optional extended reasoning."""
+    
+    # Extended thinking mode: add self-check prompt and increase tokens
+    if getattr(args, 'extended_thinking', False):
+        prompt = f"""Think step by step. After reaching an answer, double-check your work.
+If you find an error, correct it before giving your final answer.
+
+{prompt}"""
+        max_tokens = max(args.max_tokens, 2048)  # Allow longer reasoning
+    else:
+        max_tokens = args.max_tokens
     
     # Tokenize
     inputs = tokenizer(prompt, return_tensors="pt")
@@ -80,14 +103,48 @@ def generate(model, tokenizer, prompt: str, args):
     streamer = TextStreamer(tokenizer, skip_special_tokens=True) if args.stream else None
     
     print(f"\n{'='*50}")
-    print(f"Prompt: {prompt}")
+    print(f"Prompt: {prompt[:200]}{'...' if len(prompt) > 200 else ''}")
+    if getattr(args, 'extended_thinking', False):
+        print(f"[Extended Thinking Mode: max_tokens={max_tokens}]")
     print(f"{'='*50}\n")
     
-    # Generate using base model (SRDE modifies weights internally)
+    # Best-of-N sampling
+    n_samples = getattr(args, 'best_of_n', 1)
+    if n_samples > 1:
+        print(f"[Generating {n_samples} samples for majority vote...]")
+        all_outputs = []
+        for i in range(n_samples):
+            with torch.no_grad():
+                outputs = model.base_model.generate(
+                    **inputs,
+                    max_new_tokens=max_tokens,
+                    temperature=args.temperature,
+                    top_p=args.top_p,
+                    do_sample=True,
+                    pad_token_id=tokenizer.pad_token_id,
+                )
+            text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+            all_outputs.append(text)
+            print(f"  Sample {i+1}/{n_samples} generated")
+        
+        # Simple majority vote (return most common or first if all different)
+        from collections import Counter
+        # Extract just the answer part (last sentence or line)
+        answers = [o.strip().split('\n')[-1] for o in all_outputs]
+        most_common = Counter(answers).most_common(1)[0][0]
+        # Return the full output that ends with this answer
+        for o in all_outputs:
+            if o.strip().endswith(most_common) or most_common in o:
+                print(f"\n[Majority Vote Result]\n{o}")
+                return outputs
+        print(f"\n{all_outputs[0]}")
+        return outputs
+    
+    # Standard single generation
     with torch.no_grad():
         outputs = model.base_model.generate(
             **inputs,
-            max_new_tokens=args.max_tokens,
+            max_new_tokens=max_tokens,
             temperature=args.temperature,
             top_p=args.top_p,
             do_sample=True,
