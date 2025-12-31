@@ -37,7 +37,16 @@ def parse_args():
     parser.add_argument("--top_p", type=float, default=0.9)
     parser.add_argument("--stream", action="store_true", default=True)
     
-    # Extended reasoning options
+    # Inference mode presets
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["fast", "balanced", "max"],
+        default="balanced",
+        help="Inference mode: fast (quick), balanced (default), max (all enhancements)"
+    )
+    
+    # Extended reasoning options (can be set manually or via mode)
     parser.add_argument(
         "--extended_thinking",
         action="store_true",
@@ -49,13 +58,38 @@ def parse_args():
         default=1,
         help="Generate N answers and return the best/most common (majority vote)"
     )
+    parser.add_argument(
+        "--self_refine",
+        action="store_true",
+        help="Enable self-refinement loop (generate → critique → refine)"
+    )
     
     # SRDE config (should match training)
     parser.add_argument("--num_experts", type=int, default=8)
     parser.add_argument("--top_k", type=int, default=2)
     parser.add_argument("--target_sparsity", type=float, default=0.01)
     
-    return parser.parse_args()
+    args = parser.parse_args()
+    
+    # Apply mode presets
+    if args.mode == "fast":
+        # Minimal processing, quick response
+        args.extended_thinking = False
+        args.best_of_n = 1
+        args.self_refine = False
+        args.max_tokens = min(args.max_tokens, 512)
+    elif args.mode == "balanced":
+        # Default behavior
+        pass
+    elif args.mode == "max":
+        # Maximum reasoning power
+        args.extended_thinking = True
+        args.best_of_n = 3
+        args.self_refine = True
+        args.max_tokens = max(args.max_tokens, 2048)
+        args.temperature = 0.5  # More focused
+    
+    return args
 
 
 def load_model(args):
@@ -80,6 +114,60 @@ def load_model(args):
     
     model.eval()
     return model
+
+
+def self_refine(model, tokenizer, prompt: str, initial_response: str, args):
+    """Self-refinement loop: critique then refine the initial response."""
+    
+    # Step 1: Critique
+    critique_prompt = f"""Review this response for errors, inconsistencies, or improvements:
+
+Question: {prompt}
+
+Response: {initial_response}
+
+List any errors or issues found:"""
+    
+    inputs = tokenizer(critique_prompt, return_tensors="pt")
+    inputs = {k: v.cuda() for k, v in inputs.items()}
+    
+    with torch.no_grad():
+        critique_output = model.base_model.generate(
+            **inputs,
+            max_new_tokens=512,
+            temperature=0.3,
+            do_sample=True,
+            pad_token_id=tokenizer.pad_token_id,
+        )
+    critique = tokenizer.decode(critique_output[0], skip_special_tokens=True)
+    critique = critique.replace(critique_prompt, "").strip()
+    
+    print(f"\n[Self-Critique]\n{critique[:300]}...")
+    
+    # Step 2: Refine based on critique
+    refine_prompt = f"""Original question: {prompt}
+
+Previous answer: {initial_response}
+
+Issues found: {critique}
+
+Provide a corrected and improved answer:"""
+    
+    inputs = tokenizer(refine_prompt, return_tensors="pt")
+    inputs = {k: v.cuda() for k, v in inputs.items()}
+    
+    with torch.no_grad():
+        refined_output = model.base_model.generate(
+            **inputs,
+            max_new_tokens=args.max_tokens,
+            temperature=args.temperature,
+            do_sample=True,
+            pad_token_id=tokenizer.pad_token_id,
+        )
+    refined = tokenizer.decode(refined_output[0], skip_special_tokens=True)
+    refined = refined.replace(refine_prompt, "").strip()
+    
+    return refined
 
 
 def generate(model, tokenizer, prompt: str, args):
@@ -155,6 +243,13 @@ If you find an error, correct it before giving your final answer.
     if not args.stream:
         generated = tokenizer.decode(outputs[0], skip_special_tokens=True)
         print(generated)
+    
+    # Self-refinement (if enabled)
+    if getattr(args, 'self_refine', False):
+        print("\n[Self-Refinement Mode: Critiquing and refining...]")
+        initial_response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        refined = self_refine(model, tokenizer, prompt, initial_response, args)
+        print(f"\n[Refined Answer]\n{refined}")
     
     return outputs
 
