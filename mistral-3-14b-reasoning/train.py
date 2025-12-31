@@ -502,6 +502,20 @@ def pretrain_experts_supervised(
                 # For now, let's just break the outer loop too.
                 break
             print(f"(loss={avg_loss:.4f}, steps={step})")
+        
+        # Save checkpoint after completing this layer
+        layer_checkpoint_path = Path(args.output_dir) / f"pretrain_layer_{layer_key}.pt"
+        print(f"  Saving layer {layer_key} checkpoint...")
+        torch.save({
+            'layer_idx': layer_key,
+            'model_state_dict': model.state_dict(),
+            'completed_layers': layer_key + 1
+        }, layer_checkpoint_path)
+        print(f"  Checkpoint saved to {layer_checkpoint_path}")
+        
+        if SHOULD_STOP:
+            print("[STOP] Interrupted during expert pretraining. Progress saved.")
+            return
     
     print("\n" + "="*60)
     print("Phase 1 Complete - All experts pre-trained on domain data")
