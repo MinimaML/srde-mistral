@@ -405,6 +405,7 @@ def pretrain_experts_supervised(
     num_domains: int,
     steps_per_expert: int,
     max_length: int,
+    output_dir: str = "./checkpoints",
     learning_rate: float = 1e-4,
     device: str = "cuda"
 ):
@@ -504,7 +505,7 @@ def pretrain_experts_supervised(
             print(f"(loss={avg_loss:.4f}, steps={step})")
         
         # Save checkpoint after completing this layer
-        layer_checkpoint_path = Path(args.output_dir) / f"pretrain_layer_{layer_key}.pt"
+        layer_checkpoint_path = Path(output_dir) / f"pretrain_layer_{layer_key}.pt"
         print(f"  Saving layer {layer_key} checkpoint...")
         torch.save({
             'layer_idx': layer_key,
@@ -768,6 +769,7 @@ def main():
             num_domains=6,  # math, logic, code, science, planning, abstract
             steps_per_expert=args.expert_pretrain_steps,
             max_length=args.max_length,
+            output_dir=args.output_dir,
             learning_rate=args.learning_rate,
             device="cuda" if torch.cuda.is_available() else "cpu"
         )
