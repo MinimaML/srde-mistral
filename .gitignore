@@ -1,0 +1,31 @@
+# SRDE Project .gitignore
+
+# Private planning documents (not for public repo)
+v2_data_pipeline.md
+interview_cheatsheet.md
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+*.egg
+
+# Data and checkpoints (too large for git)
+*.pt
+*.bin
+*.safetensors
+checkpoints/
+data/
+
+# Logs
+*.log
+nohup.out
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
