@@ -6,9 +6,8 @@ Novel ideas that push SRDE beyond standard MoE:
 1. Temporal Experts - Route based on position in context (recent vs old)
 2. Uncertainty Routing - Route uncertain tokens to more experts
 3. Expert Composition - Dynamically combine experts into synthetic experts
-4. Self-Refining Masks - Masks that update during inference
-5. Memory Experts - Experts with persistent key-value memory
-6. Recursive Experts - Experts that call themselves for hard problems
+4. Memory Experts - Experts with persistent key-value memory
+5. Recursive Experts - Experts that call themselves for hard problems
 """
 import torch
 import torch.nn as nn
@@ -278,87 +277,7 @@ class ComposableExperts(nn.Module):
 
 
 # =============================================================================
-# 4. SELF-REFINING MASKS - Inference-time mask updates
-# =============================================================================
-
-class SelfRefiningMask(nn.Module):
-    """
-    Masks that update themselves during inference based on output quality.
-    
-    Idea: After seeing the output, refine which weights should be active
-    for the next forward pass. Creates a feedback loop.
-    """
-    
-    def __init__(
-        self,
-        num_params: int,
-        num_sparse: int,
-        hidden_size: int,
-        refinement_steps: int = 1
-    ):
-        super().__init__()
-        self.num_params = num_params
-        self.num_sparse = num_sparse
-        self.refinement_steps = refinement_steps
-        
-        # Initial mask logits
-        self.mask_logits = nn.Parameter(torch.randn(num_params))
-        
-        # Refinement network (takes output features, updates mask)
-        self.refiner = nn.Sequential(
-            nn.Linear(hidden_size, num_params // 4),
-            nn.GELU(),
-            nn.Linear(num_params // 4, num_params)
-        )
-        
-        # Memory of past refinements
-        self.refinement_momentum = 0.9
-        self.register_buffer('accumulated_refinement', torch.zeros(num_params))
-    
-    def get_initial_mask(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Get mask before refinement."""
-        _, indices = torch.topk(self.mask_logits, self.num_sparse)
-        mask = torch.zeros(self.num_params, device=self.mask_logits.device)
-        mask[indices] = 1.0
-        return mask, indices
-    
-    def refine_mask(
-        self,
-        output_features: torch.Tensor,
-        current_mask: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Refine mask based on output.
-        
-        Args:
-            output_features: Pooled output features (D,) or (B, D)
-            current_mask: Current mask (num_params,)
-        """
-        if output_features.dim() == 2:
-            output_features = output_features.mean(0)
-        
-        # Compute refinement delta
-        refinement = self.refiner(output_features)
-        
-        # Accumulate with momentum
-        self.accumulated_refinement = (
-            self.refinement_momentum * self.accumulated_refinement +
-            (1 - self.refinement_momentum) * refinement.detach()
-        )
-        
-        # Apply refinement to mask logits
-        refined_logits = self.mask_logits + self.accumulated_refinement
-        
-        # Get new mask
-        _, indices = torch.topk(refined_logits, self.num_sparse)
-        mask = torch.zeros(self.num_params, device=self.mask_logits.device)
-        mask[indices] = 1.0
-        
-        return mask, indices
-
-
-# =============================================================================
-# 5. MEMORY EXPERTS - Experts with persistent KV cache
+# 4. MEMORY EXPERTS - Experts with persistent KV cache
 # =============================================================================
 
 class MemoryExpert(nn.Module):
@@ -437,7 +356,7 @@ class MemoryExpert(nn.Module):
 
 
 # =============================================================================
-# 6. RECURSIVE EXPERTS - Self-calling for hard problems
+# 5. RECURSIVE EXPERTS - Self-calling for hard problems
 # =============================================================================
 
 class RecursiveExpert(nn.Module):
@@ -544,12 +463,6 @@ class InnovativeSRDELayer(nn.Module):
         
         # Expert composition
         self.composer = ComposableExperts(hidden_size, num_experts)
-        
-        # Self-refining masks per expert
-        self.masks = nn.ModuleList([
-            SelfRefiningMask(hidden_size * 4, hidden_size * 4 // 100, hidden_size)
-            for _ in range(num_experts)
-        ])
     
     def forward(
         self,
@@ -597,4 +510,4 @@ class InnovativeSRDELayer(nn.Module):
 
 print("SRDE v2.2 Experimental Innovations loaded!")
 print("New features: TemporalRouter, UncertaintyRouter, ComposableExperts,")
-print("              SelfRefiningMask, MemoryExpert, RecursiveExpert")
+print("              MemoryExpert, RecursiveExpert")
