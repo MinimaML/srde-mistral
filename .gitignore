@@ -1,6 +1,7 @@
 # SRDE Project .gitignore
 
 # Private planning documents (not for public repo)
+v2/
 v2_data_pipeline.md
 interview_cheatsheet.md
 
