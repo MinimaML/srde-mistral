@@ -18,7 +18,7 @@ def parse_args():
     parser.add_argument("--token", type=str, required=True, help="HuggingFace API token")
     parser.add_argument("--checkpoint", type=str, default=None, 
                         help="Path to checkpoint directory (auto-detects if not specified)")
-    parser.add_argument("--repo", type=str, default="MinimaML/SaRDinE-14B8x1P",
+    parser.add_argument("--repo", type=str, default="MinimaML/SaRDinE-14B8x4P",
                         help="HuggingFace repo name (org/model)")
     parser.add_argument("--private", action="store_true", help="Make repo private")
     return parser.parse_args()
@@ -85,11 +85,11 @@ datasets:
 - allenai/ai2_arc
 ---
 
-# SaRDinE-14B8x1P
+# SaRDinE-14B8x4P
 
 **S**parse **R**outed **D**elta **E**xperts on Mistral-14B-Reasoning.
 
-> 14B base params, 8 experts per layer, 1% sparsity
+> 14B base params, 8 experts per layer, ~4% sparsity (alpha)
 
 ## Model Description
 
@@ -103,7 +103,7 @@ Unlike traditional MoE which fragments model capacity, SaRDinE uses 100% of the 
 | Base Model | Mistral-14B-Reasoning (frozen) |
 | Trainable Parameters | ~2.4B (sparse deltas) |
 | Experts | 8 per layer, top-2 routing |
-| Sparsity | ~1-5% per expert delta |
+| Sparsity | ~4% per expert delta (training) |
 | Total Layers | 40 augmented |
 
 ## Usage
@@ -237,7 +237,7 @@ def main():
         "base_model": "mistralai/Ministral-3-14B-Reasoning-2512",
         "num_experts": 8,
         "top_k": 2,
-        "target_sparsity": 0.01,
+        "target_sparsity": 0.04,
         "torch_dtype": "bfloat16"
     }
     with open(upload_dir / "config.json", "w") as f:
