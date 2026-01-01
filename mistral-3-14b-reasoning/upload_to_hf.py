@@ -85,10 +85,60 @@ If you use this model, please cite:
 """
 
 
+def find_latest_checkpoint(checkpoints_dir: str = "./checkpoints") -> str:
+    """Find the most recent checkpoint."""
+    ckpt_path = Path(checkpoints_dir)
+    
+    if not ckpt_path.exists():
+        return None
+    
+    # Check for LATEST marker file
+    latest_marker = ckpt_path / "LATEST"
+    if latest_marker.exists():
+        checkpoint_name = latest_marker.read_text().strip()
+        checkpoint = ckpt_path / checkpoint_name
+        if checkpoint.exists():
+            return str(checkpoint)
+    
+    # Check for checkpoint-latest symlink
+    latest_link = ckpt_path / "checkpoint-latest"
+    if latest_link.exists():
+        return str(latest_link.resolve())
+    
+    # Find highest numbered checkpoint
+    checkpoints = list(ckpt_path.glob("checkpoint-*"))
+    if not checkpoints:
+        return None
+    
+    def get_step(p):
+        try:
+            return int(p.name.split("-")[1])
+        except:
+            return -1
+    
+    checkpoints.sort(key=get_step, reverse=True)
+    
+    for ckpt in checkpoints:
+        if (ckpt / "srde_weights.pt").exists():
+            return str(ckpt)
+    
+    return None
+
+
 def main():
     args = parse_args()
     
+    # Auto-detect checkpoint if not specified or default doesn't exist
     checkpoint_path = Path(args.checkpoint)
+    if not checkpoint_path.exists() or args.checkpoint == "./checkpoints/checkpoint-latest":
+        latest = find_latest_checkpoint("./checkpoints")
+        if latest:
+            print(f"Auto-detected latest checkpoint: {latest}")
+            checkpoint_path = Path(latest)
+        else:
+            print("Error: No checkpoints found in ./checkpoints/")
+            return
+    
     if not checkpoint_path.exists():
         print(f"Error: Checkpoint not found at {checkpoint_path}")
         return
