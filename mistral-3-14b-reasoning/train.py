@@ -274,8 +274,9 @@ def save_checkpoint(
     # Save optimizer state
     torch.save(optimizer.state_dict(), path / "optimizer.pt")
     
-    # Save LR scheduler
-    torch.save(lr_scheduler.state_dict(), path / "lr_scheduler.pt")
+    # Save LR scheduler (if it exists)
+    if lr_scheduler is not None:
+        torch.save(lr_scheduler.state_dict(), path / "lr_scheduler.pt")
     
     # Save SRDE schedulers
     scheduler_states = {name: sched.state_dict() for name, sched in schedulers.items()}
@@ -335,8 +336,8 @@ def load_checkpoint(
     if (path / "optimizer.pt").exists():
         optimizer.load_state_dict(torch.load(path / "optimizer.pt", map_location="cpu"))
     
-    # Load LR scheduler
-    if (path / "lr_scheduler.pt").exists():
+    # Load LR scheduler (if it exists and scheduler is not None)
+    if lr_scheduler is not None and (path / "lr_scheduler.pt").exists():
         lr_scheduler.load_state_dict(torch.load(path / "lr_scheduler.pt", map_location="cpu"))
     
     # Load SRDE schedulers
