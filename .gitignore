@@ -37,3 +37,4 @@ mistral-3-14b-reasoning/*.ipynb
 
 #preflight.py
 mistral-3-14b-reasoning/preflight.py
+*.ipynb
