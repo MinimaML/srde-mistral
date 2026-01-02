@@ -38,3 +38,4 @@ mistral-3-14b-reasoning/*.ipynb
 #preflight.py
 mistral-3-14b-reasoning/preflight.py
 *.ipynb
+mistral-3-14b-reasoning/train_sardine.ipynb
