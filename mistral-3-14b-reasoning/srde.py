@@ -556,15 +556,29 @@ class SRDELayer(nn.Module):
     
     def _compute_aux_loss(self, router_logits: torch.Tensor) -> torch.Tensor:
         """Compute load balancing auxiliary loss."""
+        if router_logits is None:
+            return torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', requires_grad=True)
         try:
+            # router_logits shape: [batch, seq, num_experts] or [batch*seq, num_experts]
             router_probs = F.softmax(router_logits, dim=-1)
-            avg_probs = router_probs.mean(dim=list(range(router_probs.dim() - 1)))
+            
+            # Flatten all dims except last (expert dim) and compute mean
+            if router_probs.dim() > 1:
+                flat_probs = router_probs.view(-1, router_probs.size(-1))
+                avg_probs = flat_probs.mean(dim=0)
+            else:
+                avg_probs = router_probs
+            
             target = 1.0 / self.config.num_experts
             load_loss = F.mse_loss(avg_probs, torch.full_like(avg_probs, target))
             return load_loss * self.config.lambda_load_balance
         except Exception as e:
-            logger.warning(f"Error computing aux loss: {e}")
-            return torch.tensor(0.0, device=router_logits.device)
+            # Only log once to avoid spam
+            if not hasattr(self, '_aux_loss_warned'):
+                logger.warning(f"Aux loss skipped ({type(e).__name__}): {e}")
+                self._aux_loss_warned = True
+            device = router_logits.device if router_logits is not None else ('cuda' if torch.cuda.is_available() else 'cpu')
+            return torch.tensor(0.0, device=device, requires_grad=True)
 
 
 class SRDEModel(nn.Module):
