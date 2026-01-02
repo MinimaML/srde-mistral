@@ -1,0 +1,13 @@
+{
+  "model_type": "sardine",
+  "architectures": ["SaRDinEForCausalLM"],
+  "auto_map": {
+    "AutoConfig": "configuration_sardine.SRDEConfig",
+    "AutoModelForCausalLM": "modeling_sardine.SaRDinEForCausalLM"
+  },
+  "base_model": "mistralai/Ministral-3-14B-Reasoning-2512",
+  "num_experts": 8,
+  "top_k": 2,
+  "target_sparsity": 0.04,
+  "torch_dtype": "bfloat16"
+}

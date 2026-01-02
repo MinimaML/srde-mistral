@@ -16,7 +16,7 @@ from dataclasses import dataclass
 import warnings
 import logging
 
-from config import SRDEConfig, validate_config
+from configuration_sardine import SRDEConfig, validate_config
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -847,22 +847,16 @@ def create_srde_model(
                     hidden_size = hf_config.hidden_size
                     vocab_size = hf_config.vocab_size
                 
-                # Get target device from device_map or language model
-                if isinstance(device_map, dict) and '' in device_map:
-                    target_device = f"cuda:{device_map['']}" if isinstance(device_map[''], int) else device_map['']
-                elif isinstance(device_map, str) and device_map.startswith('cuda'):
-                    target_device = device_map
-                else:
-                    target_device = next(language_model.parameters()).device
+                # Get device from language model
+                device = next(language_model.parameters()).device
                 
-                print(f"[SRDE] Creating lm_head on target device: {target_device}")
-                lm_head = nn.Linear(hidden_size, vocab_size, bias=False, device=target_device, dtype=torch_dtype)
+                lm_head = nn.Linear(hidden_size, vocab_size, bias=False, device=device, dtype=torch_dtype)
                 # Initialize from embed_tokens but keep as separate trainable parameter
                 if hasattr(language_model, 'embed_tokens'):
                     with torch.no_grad():
-                        lm_head.weight.copy_(language_model.embed_tokens.weight.to(target_device))
+                        lm_head.weight.copy_(language_model.embed_tokens.weight)
                     lm_head.weight.requires_grad = True
-                    print(f"[SRDE] Initialized lm_head from embed_tokens (trainable copy, device={target_device})")
+                    print(f"[SRDE] Initialized lm_head from embed_tokens (trainable copy, device={device})")
             
             if language_model is None:
                 raise RuntimeError("Could not find language_model in Mistral3Model")

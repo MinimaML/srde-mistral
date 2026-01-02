@@ -1,0 +1,9 @@
+gradio
+torch
+transformers>=5.0.0rc1
+accelerate
+bitsandbytes
+huggingface_hub
+sentencepiece
+protobuf
+spaces
