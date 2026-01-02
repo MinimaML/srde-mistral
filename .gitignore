@@ -32,4 +32,7 @@ nohup.out
 Thumbs.db
 
 # jupyter notebook
-*.ipynb
+mistral-3-14b-reasoning/*.ipynb
+
+#preflight.py
+mistral-3-14b-reasoning/preflight.py
