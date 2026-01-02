@@ -32,6 +32,7 @@ nohup.out
 Thumbs.db
 
 # jupyter notebook
+mistral-3-14b-reasoning/train_sardine.ipynb
 mistral-3-14b-reasoning/*.ipynb
 
 #preflight.py
