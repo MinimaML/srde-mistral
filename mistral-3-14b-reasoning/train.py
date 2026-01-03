@@ -10,7 +10,9 @@ import os
 import gc
 import json
 import random
+import shutil
 import threading
+import numpy as np
 from collections import deque
 from pathlib import Path
 
@@ -30,7 +32,8 @@ from muon import Muon
 
 # === CONFIG ===
 os.environ['WANDB_API_KEY'] = 'abe32d5463fb2265eaea4563a571c07e5a39b7b6'
-login(token='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')
+if os.environ.get('HF_TOKEN'):
+    login(token=os.environ['HF_TOKEN'])
 
 MODEL_NAME = 'mistralai/Ministral-3-14B-Reasoning-2512'
 SRDE_CFG = SRDEConfig()
@@ -54,8 +57,28 @@ CONFIG = {
     'num_experts': SRDE_CFG.num_experts,
     'batch_size': BATCH_SIZE,
     'grad_accum': GRAD_ACCUM,
-    'checkpoint_dir': './checkpoints',
+    'grad_accum': GRAD_ACCUM,
+    # --- PATHS (Change these for your setup!) ---
+    'data_dir': '/mnt/sardine',       # Where to cache training data
+    'checkpoint_dir': '/mnt/sardine/checkpoints',   # Where to save model checkpoints
 }
+
+# Parse args to override config
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument('--checkpoint_dir', type=str, default=None, help='Directory to save checkpoints')
+parser.add_argument('--data_dir', type=str, default=None, help='Directory to cache training data')
+args, unknown = parser.parse_known_args()
+
+if args.checkpoint_dir:
+    CONFIG['checkpoint_dir'] = args.checkpoint_dir
+if args.data_dir:
+    CONFIG['data_dir'] = args.data_dir
+
+# Set Hugging Face cache directory
+if CONFIG['data_dir']:
+    os.environ['HF_HOME'] = CONFIG['data_dir']
+    print(f"Dataset cache set to: {CONFIG['data_dir']}")
 
 DOMAINS = {
     'math': {'expert': 0, 'weight': 0.30},
@@ -122,31 +145,80 @@ class BufferedDomainStream:
 
     def _fill_loop(self):
         import time
+        from requests.exceptions import RequestException, ConnectionError, ReadTimeout
+        
+        # Exponential backoff config
+        MAX_RETRIES = 5
+        BASE_DELAY = 5
+        
         while not self.stop_event.is_set():
             with self.lock:
                 if self.buffer_token_count >= self.buffer_tokens:
                     time.sleep(0.1)
                     continue
 
+            any_success_this_cycle = False
+            
             for source_name, subset in self.sources:
                 if self.stop_event.is_set():
                     break
-                try:
-                    ds = load_dataset(source_name, subset, split='train', streaming=True, token=True)
-                    for sample in ds:
-                        if self.stop_event.is_set():
-                            break
-                        text = format_sample(sample, source_name)
-                        if len(text) < 50:
-                            continue
-                        tokens = len(self.tokenizer.encode(text, add_special_tokens=False))
-                        with self.lock:
-                            self.buffer.append({'text': text, 'domain': self.domain, 'tokens': tokens})
-                            self.buffer_token_count += tokens
-                            if self.buffer_token_count >= self.buffer_tokens * 1.2:
+                
+                # Retry loop for initial connection
+                for attempt in range(MAX_RETRIES):
+                    try:
+                        # Attempt to connect to streaming dataset
+                        ds = load_dataset(source_name, subset, split='train', streaming=True, token=True)
+                        
+                        # Test connection immediately
+                        iterator = iter(ds)
+                        
+                        # Iterate with error handling inside the stream
+                        while True:
+                            if self.stop_event.is_set(): break
+                            try:
+                                sample = next(iterator)
+                                
+                                # Process sample
+                                text = format_sample(sample, source_name)
+                                if len(text) < 50:
+                                    continue
+                                    
+                                tokens = len(self.tokenizer.encode(text, add_special_tokens=False))
+                                with self.lock:
+                                    self.buffer.append({'text': text, 'domain': self.domain, 'tokens': tokens})
+                                    self.buffer_token_count += tokens
+                                    
+                                    # Break inner loop if buffer full
+                                    if self.buffer_token_count >= self.buffer_tokens * 1.2:
+                                        break
+                                
+                                any_success_this_cycle = True
+                                
+                            except StopIteration:
+                                break # End of dataset
+                            except (RequestException, ConnectionError, ReadTimeout) as e:
+                                print(f"⚠️ Stream interrupted for {source_name}: {e}. Resuming next source...")
+                                time.sleep(BASE_DELAY)
+                                break # Move to next source
+                            except Exception as e:
+                                print(f"⚠️ Unexpected stream error {source_name}: {e}")
                                 break
-                except Exception as e:
-                    print(f"Stream error {source_name}: {e}")
+                        
+                        # If we successfully iterated (even if we broke early), consider this source 'done' for now
+                        break 
+                        
+                    except Exception as e:
+                        if attempt < MAX_RETRIES - 1:
+                            delay = BASE_DELAY * (2 ** attempt)
+                            print(f"⚠️ Connection failed for {source_name} (Attempt {attempt+1}/{MAX_RETRIES}): {e}. Retrying in {delay}s...")
+                            time.sleep(delay)
+                        else:
+                            print(f"❌ Failed to load {source_name} after {MAX_RETRIES} attempts: {e}")
+            
+            # If we went through all sources and got ZERO data (total outage?), sleep longer
+            if not any_success_this_cycle:
+                print(f"⚠️ No data received from domain '{self.domain}'. Retrying in 30s...")
+                time.sleep(30)
 
     def get_sample(self):
         with self.lock:
@@ -278,7 +350,7 @@ def main():
 
     accelerator.print(f'GPU stats: {get_gpu_stats()}')
 
-    accelerator.print(f'\n=== Training ({world_size} GPUs) ===')
+    accelerator.print(f'\n🌊 SaRDinE-14B: Sparse Routed Delta Experts Training ({world_size} GPUs) 🌊')
     all_params = [p for p in model.parameters() if p.requires_grad]
     muon_p, adam_p = get_params_for_muon(all_params)
     accelerator.print(f'Muon: {sum(p.numel() for p in muon_p)/1e6:.1f}M | Adam: {sum(p.numel() for p in adam_p)/1e6:.1f}M')
@@ -309,6 +381,43 @@ def main():
 
     pbar = tqdm(total=CONFIG['target_tokens'], unit='tok', unit_scale=True, disable=not is_main)
 
+    # --- CHECKPOINT RESUMPTION ---
+    resume_ckpt = output_dir / 'latest'
+    if resume_ckpt.exists() and (resume_ckpt / 'training_state.pt').exists():
+        accelerator.print(f'Resuming from {resume_ckpt}...')
+        try:
+            state = torch.load(resume_ckpt / 'training_state.pt', map_location='cpu')
+            step = state.get('step', 0)
+            total_tokens = state.get('total_tokens', 0)
+            
+            # Load optimizer states
+            for i, o in enumerate(opts):
+                if f'optimizer_{i}' in state:
+                    o.load_state_dict(state[f'optimizer_{i}'])
+            
+            # Load scheduler states  
+            for i, s in enumerate(scheds):
+                if f'scheduler_{i}' in state:
+                    s.load_state_dict(state[f'scheduler_{i}'])
+            
+            # Load SRDE weights
+            if (resume_ckpt / 'weights.pt').exists():
+                accelerator.unwrap_model(model).load_srde_weights(str(resume_ckpt / 'weights.pt'))
+            
+            # Restore RNG states for reproducibility
+            if 'rng_state' in state:
+                torch.set_rng_state(state['rng_state'])
+            if 'cuda_rng_state' in state and torch.cuda.is_available():
+                torch.cuda.set_rng_state(state['cuda_rng_state'])
+            
+            pbar.update(total_tokens)
+            accelerator.print(f'Resumed at step {step}, {total_tokens/1e9:.2f}B tokens')
+        except Exception as e:
+            accelerator.print(f'Failed to resume: {e}, starting fresh')
+            step = 0
+            total_tokens = 0
+    # -----------------------------
+
     model.train()
     try:
         for ids, mask in train_dl:
@@ -338,28 +447,125 @@ def main():
                 lv = loss.item() if loss else 0
                 buf = sum(s.buffer_status() for s in dataset.streams.values()) / 1e6 if dataset.streams else 0
                 gpu_stats = get_gpu_stats()
+                
+                # --- SRDE STATS ---
+                srde_metrics = {}
+                try:
+                    entropies, confidences, usages = [], [], []
+                    unwrapped = accelerator.unwrap_model(model)
+                    if hasattr(unwrapped, 'srde_layers'):
+                        for n, m in unwrapped.srde_layers.items():
+                             if hasattr(m, 'stats_queue') and m.stats_queue:
+                                s = m.stats_queue[-1]
+                                entropies.append(s['entropy'])
+                                confidences.append(s['confidence'])
+                                usages.append(s['usage'])
+                                
+                                if step % 100 == 0:
+                                    import matplotlib.pyplot as plt
+                                    fig, ax = plt.subplots(figsize=(6, 2))
+                                    ax.bar(range(len(s['usage'])), s['usage'])
+                                    ax.set_title(f'Layer {n} Usage')
+                                    srde_metrics[f'experts/layer_{n}'] = wandb.Image(fig)
+                                    plt.close(fig)
 
-                wandb.log({'loss': lv, 'step': step, 'lr': lr, 'tokens_B': total_tokens/1e9, 'buffer_M': buf, **gpu_stats})
+                        if entropies:
+                            srde_metrics['router/entropy'] = np.mean(entropies)
+                            srde_metrics['router/confidence'] = np.mean(confidences)
+                            avg_usage = np.mean(usages, axis=0) # [num_experts]
+                            srde_metrics['experts/global_std'] = np.std(avg_usage)
+                except Exception as e:
+                    print(f"Stats error: {e}")
+                # ------------------
+
+                wandb.log({'loss': lv, 'step': step, 'lr': lr, 'tokens_B': total_tokens/1e9, 'buffer_M': buf, **gpu_stats, **srde_metrics})
                 pbar.set_postfix({'loss': f'{lv:.4f}', 'gpu': f"{gpu_stats.get('gpu_total_gb', 0):.1f}GB"})
                 pbar.update(tokens_per_batch * 10)
 
-            if step % CONFIG['save_steps'] == 0 and is_main:
-                accelerator.wait_for_everyone()
-                ckpt = output_dir / f'ckpt-{step}'
-                ckpt.mkdir(exist_ok=True, parents=True)
-                accelerator.unwrap_model(model).save_srde_weights(str(ckpt / 'weights.pt'))
-                accelerator.print(f'\nSaved: {ckpt}')
+            # --- CHECKPOINT SAVING (all ranks sync first!) ---
+            if step % CONFIG['save_steps'] == 0:
+                accelerator.wait_for_everyone()  # ALL ranks must sync before save
+                if is_main:
+                    ckpt = output_dir / f'ckpt-{step}'
+                    ckpt.mkdir(exist_ok=True, parents=True)
+                    
+                    # Save SRDE weights
+                    accelerator.unwrap_model(model).save_srde_weights(str(ckpt / 'weights.pt'))
+                    
+                    # Save full training state for resumption
+                    training_state = {
+                        'step': step,
+                        'total_tokens': total_tokens,
+                        'config': CONFIG,
+                        'rng_state': torch.get_rng_state(),
+                    }
+                    
+                    # Save optimizer states
+                    for i, o in enumerate(opts):
+                        training_state[f'optimizer_{i}'] = o.state_dict()
+                    
+                    # Save scheduler states
+                    for i, s in enumerate(scheds):
+                        training_state[f'scheduler_{i}'] = s.state_dict()
+                    
+                    # Save CUDA RNG state if available
+                    if torch.cuda.is_available():
+                        training_state['cuda_rng_state'] = torch.cuda.get_rng_state()
+                    
+                    # Atomic save: write to temp then rename
+                    temp_path = ckpt / 'training_state.pt.tmp'
+                    torch.save(training_state, temp_path)
+                    temp_path.rename(ckpt / 'training_state.pt')
+                    
+                    # Update 'latest' symlink/copy for easy resumption
+                    latest = output_dir / 'latest'
+                    if latest.exists():
+                        import shutil
+                        shutil.rmtree(latest)
+                    shutil.copytree(ckpt, latest)
+                    
+                    accelerator.print(f'\nSaved: {ckpt}')
 
     except KeyboardInterrupt:
         accelerator.print('\nInterrupted')
     finally:
         dataset.stop_streams()
-        if is_main and step > 0:
-            accelerator.wait_for_everyone()
-            final = output_dir / f'final-{total_tokens//1e9:.0f}B'
-            final.mkdir(exist_ok=True, parents=True)
-            accelerator.unwrap_model(model).save_srde_weights(str(final / 'weights.pt'))
-            wandb.finish()
+        
+        # --- FINAL CHECKPOINT (all ranks sync!) ---
+        if step > 0:
+            accelerator.wait_for_everyone()  # ALL ranks must sync
+            if is_main:
+                final = output_dir / f'final-{int(total_tokens/1e9)}B'
+                final.mkdir(exist_ok=True, parents=True)
+                
+                # Save SRDE weights
+                accelerator.unwrap_model(model).save_srde_weights(str(final / 'weights.pt'))
+                
+                # Save full training state
+                training_state = {
+                    'step': step,
+                    'total_tokens': total_tokens,
+                    'config': CONFIG,
+                    'rng_state': torch.get_rng_state(),
+                }
+                for i, o in enumerate(opts):
+                    training_state[f'optimizer_{i}'] = o.state_dict()
+                for i, s in enumerate(scheds):
+                    training_state[f'scheduler_{i}'] = s.state_dict()
+                if torch.cuda.is_available():
+                    training_state['cuda_rng_state'] = torch.cuda.get_rng_state()
+                
+                torch.save(training_state, final / 'training_state.pt')
+                
+                # Update 'latest' for resumption
+                latest = output_dir / 'latest'
+                if latest.exists():
+                    shutil.rmtree(latest)
+                shutil.copytree(final, latest)
+                
+                accelerator.print(f'\nFinal saved: {final}')
+                wandb.finish()
+        
         cleanup()
 
 

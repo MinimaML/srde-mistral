@@ -223,26 +223,22 @@ class SparseExpert(nn.Module):
     
     def get_weighted_delta(self) -> torch.Tensor:
         """Get importance-weighted delta values."""
-        try:
-            base_delta = self.vocabulary.get_expert_delta(self.expert_idx)
-            
-            # Ensure shapes match
-            if len(base_delta) != len(self.importance):
-                # Handle shape mismatch gracefully
-                min_len = min(len(base_delta), len(self.importance))
-                base_delta = base_delta[:min_len]
-                importance = self.importance[:min_len]
-            else:
-                importance = self.importance
-            
-            importance_weights = torch.sigmoid(importance)
-            result = base_delta * importance_weights
-            
-            return check_tensor_health(result, f"expert_{self.expert_idx}_weighted_delta")
+        # NOTE: No try/except here - errors must propagate to prevent rank desync in DDP
+        base_delta = self.vocabulary.get_expert_delta(self.expert_idx)
         
-        except Exception as e:
-            logger.error(f"Error in SparseExpert.get_weighted_delta: {e}")
-            return torch.zeros(self.num_sparse, device=self.importance.device)
+        # Ensure shapes match
+        if len(base_delta) != len(self.importance):
+            # Handle shape mismatch gracefully
+            min_len = min(len(base_delta), len(self.importance))
+            base_delta = base_delta[:min_len]
+            importance = self.importance[:min_len]
+        else:
+            importance = self.importance
+        
+        importance_weights = torch.sigmoid(importance)
+        result = base_delta * importance_weights
+        
+        return check_tensor_health(result, f"expert_{self.expert_idx}_weighted_delta")
 
 
 class SRDERouter(nn.Module):
@@ -482,82 +478,143 @@ class SRDELayer(nn.Module):
         hidden_states: torch.Tensor,
         **kwargs
     ) -> torch.Tensor:
-        """Forward pass with SRDE modifications. Returns tensor for drop-in replacement."""
+        """
+        Forward pass with SRDE modifications. Returns tensor for drop-in replacement.
+        
+        CRITICAL: No try/except wrapper here! In distributed training, swallowing
+        errors causes rank desync (different ranks take different code paths),
+        leading to NCCL timeouts and crashes. Errors must propagate.
+        """
         self._forward_count += 1
         
-        try:
-            # Validate input
-            if hidden_states is None:
-                raise ValueError("hidden_states cannot be None")
-            
-            # Get routing decisions
-            router_logits, router_weights, selected_experts = self.router(hidden_states)
-            
-            # Run base FFN
-            base_output = self.base_ffn(hidden_states)
-            base_output = check_tensor_health(base_output, "base_ffn_output")
-            
-            # Compute expert contributions
-            output_delta = torch.zeros_like(base_output)
-            
-            # Get all deltas efficiently
-            expert_deltas = []
-            for expert in self.experts:
-                expert_deltas.append(expert.get_weighted_delta())
-            expert_deltas = torch.stack(expert_deltas)  # [num_experts, num_sparse]
-            
-            # Ensure deltas are on correct device
-            if expert_deltas.device != base_output.device:
-                expert_deltas = expert_deltas.to(base_output.device)
-            
-            # Mean delta scale per expert
-            delta_scale = expert_deltas.mean(dim=1)  # [num_experts]
-            
-            # Apply weighted by router
-            for k in range(self.config.top_k):
-                expert_idx = selected_experts[..., k]
-                weight = router_weights[..., k:k+1]
-                
-                # Safe indexing
-                scale = delta_scale[expert_idx.clamp(0, len(delta_scale)-1)]
-                contribution = weight * scale.unsqueeze(-1) * base_output
-                output_delta = output_delta + contribution
-            
-            output = base_output + output_delta
-            output = check_tensor_health(output, "srde_output")
-            
-            # Store auxiliary loss for later aggregation
-            aux_loss = self._compute_aux_loss(router_logits)
-            if aux_loss.device != hidden_states.device:
-                aux_loss = aux_loss.to(hidden_states.device)
-            self._last_aux_loss = aux_loss
-            
-            self._last_router_logits = router_logits
-            self._last_router_weights = router_weights
-            self._last_selected_experts = selected_experts
-            
-            return output
+        # Validate input
+        if hidden_states is None:
+            raise ValueError("hidden_states cannot be None")
         
-        except Exception as e:
-            logger.error(f"Error in SRDELayer forward (call {self._forward_count}): {e}")
-            # Fallback: return base FFN output
-            base_output = self.base_ffn(hidden_states)
-            # Ensure fallback loss requires grad to avoid backward error
-            self._last_aux_loss = torch.tensor(0.0, device=hidden_states.device, requires_grad=True)
-            return base_output
+        # Get routing decisions
+        router_logits, router_weights, selected_experts = self.router(hidden_states)
+        
+        # Run base FFN
+        base_output = self.base_ffn(hidden_states)
+        base_output = check_tensor_health(base_output, "base_ffn_output")
+        
+        # Compute expert contributions
+        output_delta = torch.zeros_like(base_output)
+        
+        # Get all deltas efficiently
+        expert_deltas = []
+        for expert in self.experts:
+            expert_deltas.append(expert.get_weighted_delta())
+        expert_deltas = torch.stack(expert_deltas)  # [num_experts, num_sparse]
+        
+        # Ensure deltas are on correct device
+        if expert_deltas.device != base_output.device:
+            expert_deltas = expert_deltas.to(base_output.device)
+        
+        # Mean delta scale per expert
+        delta_scale = expert_deltas.mean(dim=1)  # [num_experts]
+        
+        # Apply weighted by router
+        for k in range(self.config.top_k):
+            expert_idx = selected_experts[..., k]
+            weight = router_weights[..., k:k+1]
+            
+            # Safe indexing
+            scale = delta_scale[expert_idx.clamp(0, len(delta_scale)-1)]
+            contribution = weight * scale.unsqueeze(-1) * base_output
+            output_delta = output_delta + contribution
+        
+        output = base_output + output_delta
+        output = check_tensor_health(output, "srde_output")
+        
+        # Store auxiliary loss for later aggregation
+        aux_loss = self._compute_aux_loss(router_logits)
+        if aux_loss.device != hidden_states.device:
+            aux_loss = aux_loss.to(hidden_states.device)
+        self._last_aux_loss = aux_loss
+        
+        self._last_router_logits = router_logits
+        self._last_router_weights = router_weights
+        self._last_selected_experts = selected_experts
+        
+        return output
     
     def get_last_aux_loss(self) -> torch.Tensor:
-        """Get the auxiliary loss from the last forward pass."""
-        # Ensure it requires grad
-        loss = getattr(self, '_last_aux_loss', torch.tensor(0.0))
-        if not loss.requires_grad:
-            loss = loss.clone().detach().requires_grad_(True)
-        return loss
+        """
+        Get the auxiliary loss from the last forward pass.
+        
+        Returns a tensor that is properly connected to the computation graph
+        if available, otherwise returns a zero tensor with requires_grad=True.
+        """
+        if hasattr(self, '_last_aux_loss') and self._last_aux_loss is not None:
+            return self._last_aux_loss
+        
+        # Return zero tensor on the correct device
+        device = next(self.parameters()).device
+        return torch.zeros(1, device=device, requires_grad=True).squeeze()
     
     def _compute_aux_loss(self, router_logits: torch.Tensor) -> torch.Tensor:
-        """Compute load balancing auxiliary loss."""
+        """
+        Compute load balancing auxiliary loss.
+        
+        IMPORTANT: This method is gradient-checkpoint-safe. Stats collection
+        is skipped during recomputation passes to avoid _StopRecomputationError.
+        """
         if router_logits is None:
             return torch.tensor(0.0, device='cuda' if torch.cuda.is_available() else 'cpu', requires_grad=True)
+        
+        device = router_logits.device
+        
+        # --- GRADIENT CHECKPOINT SAFETY ---
+        # When gradient checkpointing recomputes forward passes during backward,
+        # torch.is_grad_enabled() returns True but we're in a special context.
+        # We detect recomputation by checking if we're inside a backward pass.
+        is_recomputing = not torch.is_grad_enabled() or (
+            torch.is_grad_enabled() and 
+            hasattr(torch._C, '_current_graph_task_id') and 
+            torch._C._current_graph_task_id() is not None
+        )
+        
+        # --- SRDE STATS (only on first forward, not during recomputation) ---
+        if not is_recomputing and self.training:
+            try:
+                # Detach to avoid graph issues - we only need values for logging
+                logits_detached = router_logits.detach()
+                probs = F.softmax(logits_detached, dim=-1)
+                
+                # 1. Entropy (uncertainty)
+                log_probs = F.log_softmax(logits_detached, dim=-1)
+                entropy = -(probs * log_probs).sum(dim=-1).mean()
+                
+                # 2. Confidence (max prob)
+                confidence = probs.max(dim=-1)[0].mean()
+                
+                # 3. Expert Usage (histogram)
+                if probs.dim() > 2:
+                    flat_probs = probs.view(-1, probs.size(-1))
+                    mean_usage = flat_probs.mean(dim=0)
+                else:
+                    mean_usage = probs.mean(dim=0)
+
+                if not hasattr(self, 'stats_queue'):
+                    self.stats_queue = []
+                self.stats_queue.append({
+                    'entropy': entropy.item(),
+                    'confidence': confidence.item(),
+                    'usage': mean_usage.cpu().float().numpy()
+                })
+                # Keep last 5 steps only to save memory
+                if len(self.stats_queue) > 5:
+                    self.stats_queue.pop(0)
+
+            except Exception as e:
+                # Never break training for stats
+                if not hasattr(self, '_stats_warned'):
+                    logger.debug(f"Stats collection skipped: {e}")
+                    self._stats_warned = True
+        # ------------------
+
+        # --- ACTUAL AUX LOSS COMPUTATION ---
         try:
             # router_logits shape: [batch, seq, num_experts] or [batch*seq, num_experts]
             router_probs = F.softmax(router_logits, dim=-1)
@@ -572,12 +629,12 @@ class SRDELayer(nn.Module):
             target = 1.0 / self.config.num_experts
             load_loss = F.mse_loss(avg_probs, torch.full_like(avg_probs, target))
             return load_loss * self.config.lambda_load_balance
+            
         except Exception as e:
             # Only log once to avoid spam
             if not hasattr(self, '_aux_loss_warned'):
-                logger.warning(f"Aux loss skipped ({type(e).__name__}): {e}")
+                logger.warning(f"Aux loss computation failed ({type(e).__name__}): {e}")
                 self._aux_loss_warned = True
-            device = router_logits.device if router_logits is not None else ('cuda' if torch.cuda.is_available() else 'cpu')
             return torch.tensor(0.0, device=device, requires_grad=True)
 
 
