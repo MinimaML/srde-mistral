@@ -91,7 +91,7 @@ DOMAINS = {
 
 DATA_SOURCES = {
     'math': [('nvidia/OpenMathInstruct-2', None), ('meta-math/MetaMathQA', None)],
-    'code': [('ise-uiuc/Magicoder-OSS-Instruct-75K', None), ('bigcode/starcoderdata', 'python')],
+    'code': [('ise-uiuc/Magicoder-OSS-Instruct-75K', None), ('bigcode/starcoderdata', None)],
     'science': [('HuggingFaceFW/fineweb-edu', 'sample-10BT')],
     'logic': [('Rowan/hellaswag', None)],
     'planning': [('hotpot_qa', 'fullwiki')],
