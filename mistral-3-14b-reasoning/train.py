@@ -124,6 +124,9 @@ def format_sample(sample, source_name):
         return ''
 
 
+# Global tokenizer lock for thread safety
+_TOKENIZER_LOCK = threading.Lock()
+
 class BufferedDomainStream:
     def __init__(self, domain, sources, tokenizer, buffer_tokens=1_000_000):
         self.domain = domain
@@ -185,7 +188,8 @@ class BufferedDomainStream:
                                 if len(text) < 50:
                                     continue
                                     
-                                tokens = len(self.tokenizer.encode(text, add_special_tokens=False))
+                                with _TOKENIZER_LOCK:
+                                    tokens = len(self.tokenizer.encode(text, add_special_tokens=False))
                                 with self.lock:
                                     self.buffer.append({'text': text, 'domain': self.domain, 'tokens': tokens})
                                     self.buffer_token_count += tokens
@@ -330,7 +334,7 @@ def main():
 
     def collate_fn(batch):
         texts = [b['text'][:8192] for b in batch]
-        with _tokenizer_lock:
+        with _TOKENIZER_LOCK:
             enc = tokenizer(texts, truncation=True, max_length=CONFIG['max_length'], padding='max_length', return_tensors='pt')
         return enc['input_ids'], enc['attention_mask']
 
