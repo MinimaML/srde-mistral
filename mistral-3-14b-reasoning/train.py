@@ -7,6 +7,8 @@ Or single GPU: python train.py
 """
 
 import os
+# Disable tokenizer parallelism to avoid 'Already borrowed' error in multi-GPU
+os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 import gc
 import json
 import random
