@@ -203,11 +203,11 @@ class BufferedDomainStream:
                             except StopIteration:
                                 break # End of dataset
                             except (RequestException, ConnectionError, ReadTimeout) as e:
-                                print(f"⚠️ Stream interrupted for {source_name}: {e}. Resuming next source...")
+                                print(f"[WARN] Stream interrupted for {source_name}: {e}. Resuming next source...")
                                 time.sleep(BASE_DELAY)
                                 break # Move to next source
                             except Exception as e:
-                                print(f"⚠️ Unexpected stream error {source_name}: {e}")
+                                print(f"[WARN] Unexpected stream error {source_name}: {e}")
                                 break
                         
                         # If we successfully iterated (even if we broke early), consider this source 'done' for now
@@ -216,14 +216,14 @@ class BufferedDomainStream:
                     except Exception as e:
                         if attempt < MAX_RETRIES - 1:
                             delay = BASE_DELAY * (2 ** attempt)
-                            print(f"⚠️ Connection failed for {source_name} (Attempt {attempt+1}/{MAX_RETRIES}): {e}. Retrying in {delay}s...")
+                            print(f"[WARN] Connection failed for {source_name} (Attempt {attempt+1}/{MAX_RETRIES}): {e}. Retrying in {delay}s...")
                             time.sleep(delay)
                         else:
-                            print(f"❌ Failed to load {source_name} after {MAX_RETRIES} attempts: {e}")
+                            print(f" Failed to load {source_name} after {MAX_RETRIES} attempts: {e}")
             
             # If we went through all sources and got ZERO data (total outage?), sleep longer
             if not any_success_this_cycle:
-                print(f"⚠️ No data received from domain '{self.domain}'. Retrying in 30s...")
+                print(f"[WARN] No data received from domain '{self.domain}'. Retrying in 30s...")
                 time.sleep(30)
 
     def get_sample(self):
@@ -358,7 +358,7 @@ def main():
 
     accelerator.print(f'GPU stats: {get_gpu_stats()}')
 
-    accelerator.print(f'\n🌊 SaRDinE-14B: Sparse Routed Delta Experts Training ({world_size} GPUs) 🌊')
+    accelerator.print(f'\n SaRDinE-14B: Sparse Routed Delta Experts Training ({world_size} GPUs) ')
     all_params = [p for p in model.parameters() if p.requires_grad]
     muon_p, adam_p = get_params_for_muon(all_params)
     accelerator.print(f'Muon: {sum(p.numel() for p in muon_p)/1e6:.1f}M | Adam: {sum(p.numel() for p in adam_p)/1e6:.1f}M')
