@@ -324,12 +324,14 @@ def main():
 
     tokenizer = AutoTokenizer.from_pretrained(CONFIG['model_name'], trust_remote_code=True)
     tokenizer.pad_token = tokenizer.eos_token
+    _tokenizer_lock = threading.Lock()
 
     dataset = BufferedStreamDataset(DOMAINS, tokenizer, CONFIG['buffer_tokens'])
 
     def collate_fn(batch):
         texts = [b['text'][:8192] for b in batch]
-        enc = tokenizer(texts, truncation=True, max_length=CONFIG['max_length'], padding='max_length', return_tensors='pt')
+        with _tokenizer_lock:
+            enc = tokenizer(texts, truncation=True, max_length=CONFIG['max_length'], padding='max_length', return_tensors='pt')
         return enc['input_ids'], enc['attention_mask']
 
     train_dl = DataLoader(dataset, batch_size=CONFIG['batch_size'], collate_fn=collate_fn)
