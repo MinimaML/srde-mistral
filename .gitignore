@@ -39,3 +39,4 @@ mistral-3-14b-reasoning/*.ipynb
 mistral-3-14b-reasoning/preflight.py
 *.ipynb
 mistral-3-14b-reasoning/train_sardine.ipynb
+pylon_business_plan.md
